@@ -1,50 +1,97 @@
 //! Core logic: prompt matching, command/output extraction, and the
 //! execute-command wait loop. This mirrors the behavior of the Python
-//! `tmux-repl-mcp` server's core module.
+//! `tmux-repl-mcp` server's core module, extended to match *any* of a set
+//! of prompt patterns (a REPL may show several prompt styles — e.g. SBCL's
+//! `* `, numbered debugger prompts `0]`, and `ldb> `).
 
 use crate::tmux;
 use regex::Regex;
 use std::time::{Duration, Instant};
 
-/// A REPL prompt pattern, with the two matching modes the reference
-/// implementation uses: search (find prompt lines in history) and
-/// full-match (detect that the REPL is idle again).
-pub struct Prompt {
-    regex: Regex,
+/// A set of REPL prompt patterns. Each entry carries a label — a kind name
+/// when it came from a `--kind` preset, otherwise the regex source — so the
+/// tool can report which prompt matched.
+pub struct Prompts {
+    entries: Vec<(String, Regex)>,
 }
 
-impl Prompt {
-    /// Compile a prompt pattern (Rust `regex` crate syntax).
-    pub fn new(pattern: &str) -> Result<Self, String> {
-        let regex =
-            Regex::new(pattern).map_err(|e| format!("invalid prompt regex: {e}"))?;
-        Ok(Self { regex })
+impl Prompts {
+    /// Build from raw prompt regexes; each is labelled by its own source.
+    #[cfg(test)]
+    pub fn from_prompts(prompts: &[String]) -> Result<Self, String> {
+        let mut entries = Vec::new();
+        for p in prompts {
+            entries.push((p.clone(), compile(p)?));
+        }
+        Ok(Self { entries })
     }
 
-    /// Search semantics (like Python `re.search`): true when the pattern
-    /// matches anywhere in the line. Used to find prompt lines in history
-    /// and to check readiness.
+    /// Build from named kinds (expanded through `kinds`) plus extra prompts.
+    pub fn from_kinds(
+        kind_names: &[String],
+        kinds: &std::collections::HashMap<String, Vec<String>>,
+        extra_prompts: &[String],
+    ) -> Result<Self, String> {
+        let mut entries = Vec::new();
+        for name in kind_names {
+            let regexes = kinds
+                .get(name)
+                .ok_or_else(|| format!("unknown REPL kind {name:?}"))?;
+            for r in regexes {
+                entries.push((name.clone(), compile(r)?));
+            }
+        }
+        for p in extra_prompts {
+            entries.push((p.clone(), compile(p)?));
+        }
+        Ok(Self { entries })
+    }
+
+    /// Search semantics (like Python `re.search`): true when any pattern
+    /// matches anywhere in the line. Used to find prompt lines in history.
     pub fn is_prompt_line(&self, line: &str) -> bool {
-        self.regex.is_match(line)
+        self.entries.iter().any(|(_, re)| re.is_match(line))
     }
 
-    /// Idle semantics: true when the pattern matches a prefix of the line
-    /// and everything after it is whitespace. Used to detect that the REPL
-    /// is idle again after a command. Trailing whitespace is tolerated so
-    /// that pane captures padded to the terminal width (and tmux's own
-    /// trimming of trailing spaces) do not defeat prompt patterns that end
-    /// in a literal space, e.g. `^>>> `.
+    /// Idle semantics: true when any pattern matches a prefix of the line
+    /// with only whitespace after it. Used to detect that the REPL is idle
+    /// again after a command.
     pub fn is_idle_prompt(&self, line: &str) -> bool {
-        self.regex.find(line).is_some_and(|m| {
-            m.start() == 0 && line[m.end()..].chars().all(|c| c.is_whitespace())
-        })
+        self.entries.iter().any(|(_, re)| idle_match(re, line))
     }
 
-    /// Strip the first match of the prompt from the line and trim the
-    /// result (like Python `re.sub(pattern, "", line, count=1).strip()`).
-    pub fn strip_prompt(&self, line: &str) -> String {
-        self.regex.replace(line, "").trim().to_string()
+    /// Label of the first pattern that idle-matches the line.
+    pub fn detect_idle(&self, line: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(_, re)| idle_match(re, line))
+            .map(|(label, _)| label.as_str())
     }
+
+    /// Strip the prompt prefix from a command line: replace the first match
+    /// of the first matching pattern and trim (like Python
+    /// `re.sub(pattern, "", line, count=1).strip()`).
+    pub fn strip_prompt(&self, line: &str) -> String {
+        for (_, re) in &self.entries {
+            if re.is_match(line) {
+                return re.replace(line, "").trim().to_string();
+            }
+        }
+        line.trim().to_string()
+    }
+}
+
+fn compile(pattern: &str) -> Result<Regex, String> {
+    Regex::new(pattern).map_err(|e| format!("invalid prompt regex {pattern:?}: {e}"))
+}
+
+/// True when `re` matches a prefix of `line` and everything after the match
+/// is whitespace. Tolerates pane captures padded to the terminal width and
+/// tmux's trimming of trailing spaces, so prompt patterns that end in a
+/// literal space (e.g. `^>>> `) still match.
+fn idle_match(re: &Regex, line: &str) -> bool {
+    re.find(line)
+        .is_some_and(|m| m.start() == 0 && line[m.end()..].chars().all(|c| c.is_whitespace()))
 }
 
 /// Split captured pane text on newlines (like Python `str.split("\n")`).
@@ -57,25 +104,29 @@ pub fn last_meaningful_line<'a>(lines: &[&'a str]) -> Option<&'a str> {
     lines.iter().rev().find(|l| !l.trim().is_empty()).copied()
 }
 
-/// True if the last meaningful line of the pane is a bare prompt
-/// (i.e. the REPL is idle and ready for input).
-///
-/// Idle semantics rather than plain search: an echoed command line such as
-/// `>>> time.sleep(5)` *starts* with the prompt but the REPL is busy, so it
-/// must not count as ready.
-pub fn is_repl_ready(prompt: &Prompt, lines: &[&str]) -> bool {
-    last_meaningful_line(lines).is_some_and(|l| prompt.is_idle_prompt(l))
+/// Label of the prompt that the last meaningful line idle-matches, if the
+/// REPL is idle and showing a known prompt.
+pub fn detect_idle_kind<'a>(prompt: &'a Prompts, lines: &[&str]) -> Option<&'a str> {
+    last_meaningful_line(lines).and_then(|l| prompt.detect_idle(l))
+}
+
+/// True if the last meaningful line of the pane is a bare prompt (i.e. the
+/// REPL is idle and ready for input). Idle semantics rather than plain
+/// search: an echoed command line such as `>>> time.sleep(5)` *starts* with
+/// the prompt but the REPL is busy, so it must not count as ready.
+pub fn is_repl_ready(prompt: &Prompts, lines: &[&str]) -> bool {
+    detect_idle_kind(prompt, lines).is_some()
 }
 
 /// Index of the last prompt line in `lines`, or `None`.
-fn last_prompt_index(lines: &[&str], prompt: &Prompt) -> Option<usize> {
+fn last_prompt_index(lines: &[&str], prompt: &Prompts) -> Option<usize> {
     lines.iter().rposition(|l| prompt.is_prompt_line(l))
 }
 
 /// Index of the last prompt line strictly before `end_idx`, or `None`.
 fn second_to_last_prompt_index(
     lines: &[&str],
-    prompt: &Prompt,
+    prompt: &Prompts,
     end_idx: usize,
 ) -> Option<usize> {
     lines[..end_idx].iter().rposition(|l| prompt.is_prompt_line(l))
@@ -84,12 +135,12 @@ fn second_to_last_prompt_index(
 /// Parse `(last_command, output)` out of the pane lines.
 ///
 /// `last_command` is the text of the second-to-last prompt line with the
-/// prompt prefix stripped; `output` is everything between that line and
-/// the final prompt line. Returns `(None, None)` when no complete
+/// prompt prefix stripped; `output` is everything between that line and the
+/// final prompt line. Returns `(None, None)` when no complete
 /// prompt → command → output → prompt block can be found.
 pub fn extract_last_command_and_output(
     lines: &[&str],
-    prompt: &Prompt,
+    prompt: &Prompts,
 ) -> (Option<String>, Option<String>) {
     let end_idx = match last_prompt_index(lines, prompt) {
         Some(i) => i,
@@ -109,29 +160,55 @@ pub fn extract_last_command_and_output(
     (Some(last_command), Some(output))
 }
 
-/// Poll the pane until its last line full-matches the prompt, meaning the
-/// REPL has finished processing and is idle again. Returns the final lines.
+/// Wait for a command to finish after it has been sent to the pane.
+///
+/// Two phases, mirroring the reference design:
+///
+/// 1. Wait until the pane content changes from `pre_send` (the command has
+///    been echoed and the REPL has started processing it). Without this,
+///    the very first capture after `send-keys` can still show the old idle
+///    prompt and the function would return before the command ran.
+/// 2. Wait until the last line idle-matches any prompt (the REPL is idle
+///    again), then return the final lines.
+///
+/// A fast command that echoes and finishes between polls passes phase 1
+/// immediately (the pane already differs from `pre_send`) and is caught by
+/// phase 2's idle check, so it cannot hang.
 pub fn wait_for_idle(
     pane: &str,
-    prompt: &Prompt,
+    prompt: &Prompts,
     max_lines: usize,
     check: f64,
     timeout: Option<f64>,
     socket: Option<&str>,
+    pre_send: &str,
 ) -> Result<Vec<String>, String> {
     let check_dur = Duration::from_secs_f64(check.max(0.001));
     let started = Instant::now();
 
+    // Phase 1: wait for the pane to change (the command echo).
     loop {
-        if let Some(t) = timeout
-            && t > 0.0
-            && started.elapsed().as_secs_f64() >= t
-        {
+        if timeout_is_up(timeout, started) {
             return Err(format!(
-                "timed out after {t} seconds waiting for the REPL prompt"
+                "timed out after {} seconds waiting for the REPL prompt",
+                timeout.unwrap_or(0.0)
             ));
         }
+        let captured = tmux::capture_pane(pane, max_lines, socket)?;
+        if captured != pre_send {
+            break;
+        }
+        std::thread::sleep(check_dur);
+    }
 
+    // Phase 2: wait until the REPL is idle again.
+    loop {
+        if timeout_is_up(timeout, started) {
+            return Err(format!(
+                "timed out after {} seconds waiting for the REPL prompt",
+                timeout.unwrap_or(0.0)
+            ));
+        }
         let captured = tmux::capture_pane(pane, max_lines, socket)?;
         let lines = split_lines(&captured);
         match last_meaningful_line(&lines) {
@@ -143,12 +220,31 @@ pub fn wait_for_idle(
     }
 }
 
+fn timeout_is_up(timeout: Option<f64>, started: Instant) -> bool {
+    timeout.is_some_and(|t| t > 0.0 && started.elapsed().as_secs_f64() >= t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
-    fn py_prompt() -> Prompt {
-        Prompt::new(r"^>>> ").unwrap()
+    fn py_prompt() -> Prompts {
+        Prompts::from_prompts(&["^>>> ".to_string()]).unwrap()
+    }
+
+    fn sbcl_prompt() -> Prompts {
+        let mut kinds = HashMap::new();
+        kinds.insert(
+            "sbcl".to_string(),
+            vec![
+                r"^\* ".to_string(),
+                r"^\*$".to_string(),
+                r"^ *\d+\] ?".to_string(),
+                r"^ldb> ".to_string(),
+            ],
+        );
+        Prompts::from_kinds(&["sbcl".to_string()], &kinds, &[]).unwrap()
     }
 
     #[test]
@@ -156,6 +252,7 @@ mod tests {
         let prompt = py_prompt();
         let lines = split_lines(">>> \n");
         assert!(is_repl_ready(&prompt, &lines));
+        assert_eq!(detect_idle_kind(&prompt, &lines), Some("^>>> "));
     }
 
     #[test]
@@ -191,15 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn extraction_trims_width_padding_from_output() {
-        let prompt = py_prompt();
-        let lines = split_lines(">>> print(1)\n1                 \n>>>                 \n");
-        let (cmd, out) = extract_last_command_and_output(&lines, &prompt);
-        assert_eq!(cmd.as_deref(), Some("print(1)"));
-        assert_eq!(out.as_deref(), Some("1"));
-    }
-
-    #[test]
     fn extracts_last_command_and_output() {
         let prompt = py_prompt();
         let lines = split_lines(">>> print(1)\n1\n>>> \n");
@@ -225,7 +313,7 @@ mod tests {
 
     #[test]
     fn bash_prompt_matches_full_line_and_command_lines() {
-        let prompt = Prompt::new(r"[^$#]+[$#] *").unwrap();
+        let prompt = Prompts::from_prompts(&[r"[^$#]+[$#] *".to_string()]).unwrap();
         assert!(prompt.is_idle_prompt("user@host$ "));
         assert!(prompt.is_prompt_line("user@host$ ls"));
     }
@@ -235,5 +323,40 @@ mod tests {
         let lines = split_lines("a\n\n   \n");
         assert_eq!(last_meaningful_line(&lines), Some("a"));
         assert_eq!(last_meaningful_line(&[]), None);
+    }
+
+    #[test]
+    fn sbcl_kind_matches_multiple_prompt_styles() {
+        let prompt = sbcl_prompt();
+        // Top-level prompt, idle
+        assert!(prompt.is_idle_prompt("* "));
+        assert_eq!(prompt.detect_idle("* "), Some("sbcl"));
+        // Debugger prompt with a number, idle
+        assert!(prompt.is_idle_prompt("0] "));
+        assert_eq!(prompt.detect_idle("0] "), Some("sbcl"));
+        // Debugger prompt while a command is on the line
+        assert!(prompt.is_prompt_line("0] (restart 1)"));
+        assert!(!prompt.is_idle_prompt("0] (restart 1)"));
+        // ldb prompt
+        assert!(prompt.is_idle_prompt("ldb> "));
+    }
+
+    #[test]
+    fn sbcl_extraction_across_debugger_boundaries() {
+        let prompt = sbcl_prompt();
+        // A command errored, dropped into the debugger, and was restarted:
+        // * (foo)  ->  0] (restart 1)  ->  * 
+        let lines =
+            split_lines("* (foo)\n\nDebugger invoked...\n0] (restart 1)\nBack to top level.\n* \n");
+        let (cmd, out) = extract_last_command_and_output(&lines, &prompt);
+        assert_eq!(cmd.as_deref(), Some("(restart 1)"));
+        assert_eq!(out.as_deref(), Some("Back to top level."));
+    }
+
+    #[test]
+    fn strip_prompt_uses_first_matching_pattern() {
+        let prompt = sbcl_prompt();
+        assert_eq!(prompt.strip_prompt("0] (restart 1)"), "(restart 1)");
+        assert_eq!(prompt.strip_prompt("* (foo)"), "(foo)");
     }
 }

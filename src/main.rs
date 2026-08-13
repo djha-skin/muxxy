@@ -1,14 +1,18 @@
 //! muxxy — interact with a REPL running inside a tmux pane, from the
-//! command line. A CLI mirror of the `tmux-repl-mcp` MCP server's three
-//! tools, driven by a single `--prompt` regex instead of named REPL kinds.
+//! command line. A CLI mirror of the `tmux-repl-mcp` MCP server's tools,
+//! driven by prompt regexes (repeatable, or via `--kind` presets) instead
+//! of a single named kind.
 
 mod core;
+mod kinds;
 mod tmux;
+mod yaml;
 
 use clap::{Parser, Subcommand as ClapSubcommand};
-use core::{extract_last_command_and_output, is_repl_ready, wait_for_idle, Prompt};
-use serde::Serialize;
+use core::{extract_last_command_and_output, is_repl_ready, wait_for_idle, Prompts};
 use std::process::ExitCode;
+use std::time::Duration;
+use yaml::{render_map, YamlValue};
 
 #[derive(Parser)]
 #[command(
@@ -17,25 +21,26 @@ use std::process::ExitCode;
     about = "Interact with a REPL running inside a tmux pane"
 )]
 struct Cli {
-    /// Prompt regular expression for the REPL (Rust regex syntax), e.g. "^>>> "
-    #[arg(long, required = true)]
-    prompt: String,
+    /// Prompt regex for the REPL (Rust regex syntax); repeatable for REPLs
+    /// with several prompt styles, e.g. '^>>> ' or '^ *[0-9]+\\] ?'
+    #[arg(long, value_name = "REGEX")]
+    prompt: Vec<String>,
 
-    /// tmux pane identifier, e.g. "0" or "%1"
-    #[arg(long, global = true, default_value = "0")]
+    /// Built-in REPL kind preset (python, bash, sbcl, lisp, irb, ...); repeatable
+    #[arg(long, value_name = "KIND")]
+    kind: Vec<String>,
+
+    /// tmux pane target, e.g. "0", "mysess:0.0", "%1"
+    #[arg(short = 't', long, global = true, default_value = "0")]
     pane: String,
 
     /// Maximum number of lines to capture from the pane
     #[arg(long, global = true, default_value_t = 200)]
     max_lines: usize,
 
-    /// tmux server socket path to talk to (defaults to the default server)
+    /// tmux server socket path (defaults to the default server)
     #[arg(long, global = true)]
     socket: Option<String>,
-
-    /// Pretty-print the JSON output
-    #[arg(long, global = true)]
-    pretty: bool,
 
     #[command(subcommand)]
     command: Subcommand,
@@ -43,7 +48,7 @@ struct Cli {
 
 #[derive(ClapSubcommand)]
 enum Subcommand {
-    /// Check whether the pane is currently showing a prompt matching --prompt
+    /// Check whether the pane is currently showing a bare prompt (idle)
     IsReplReady,
     /// Return the last command and its output from the pane history
     GetLastCommand,
@@ -60,49 +65,73 @@ enum Subcommand {
         #[arg(long, default_value_t = 0.0)]
         timeout: f64,
     },
-}
+    /// Split the pane, creating a new pane beside it; print the new pane's id
+    SplitPane {
+        /// Split with the new pane below (stacked) instead of beside
+        #[arg(long, conflicts_with = "horizontal")]
+        vertical: bool,
 
-#[derive(Serialize)]
-struct ReadyOutput {
-    /// The prompt regex that matched, or null when the pane is not ready
-    kind: Option<String>,
-    is_ready: bool,
-}
+        /// Split with the new pane beside (side by side)
+        #[arg(long)]
+        horizontal: bool,
 
-#[derive(Serialize)]
-struct LastCommandOutput {
-    last_command: Option<String>,
-    output: Option<String>,
-}
+        /// New pane size: lines ("20") or percent ("50%")
+        #[arg(long)]
+        size: Option<String>,
 
-#[derive(Serialize)]
-struct ExecOutput {
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    last_command: Option<String>,
-    output: Option<String>,
+        /// Setup command to send to the new pane (repeatable, in order)
+        #[arg(long)]
+        command: Vec<String>,
+
+        /// Seconds to sleep after the corresponding setup command
+        /// (repeatable, defaults to 0)
+        #[arg(long, allow_hyphen_values = true)]
+        sleep: Vec<f64>,
+    },
+    /// Send one or more commands (each followed by Enter) to the pane
+    SendKeys {
+        /// Command(s) to send to the pane
+        #[arg(required = true)]
+        commands: Vec<String>,
+
+        /// Seconds to sleep between commands
+        #[arg(long, default_value_t = 0.0)]
+        sleep: f64,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let prompt = match Prompt::new(&cli.prompt) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("muxxy: {e}");
-            return ExitCode::from(2);
-        }
-    };
-
+    // split-pane and send-keys never need prompt patterns; the rest do.
     let result = match &cli.command {
-        Subcommand::IsReplReady => run_is_repl_ready(&prompt, &cli),
-        Subcommand::GetLastCommand => run_get_last_command(&prompt, &cli),
-        Subcommand::ExecuteCommand {
+        Subcommand::SplitPane {
+            vertical,
+            horizontal,
+            size,
             command,
-            check,
-            timeout,
-        } => run_execute_command(&prompt, &cli, command, *check, *timeout),
+            sleep,
+        } => run_split_pane(&cli, *vertical, *horizontal, size.as_deref(), command, sleep),
+        Subcommand::SendKeys { commands, sleep } => run_send_keys(&cli, commands, *sleep),
+        command => {
+            let prompts = match build_prompts(&cli) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("muxxy: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            match command {
+                Subcommand::IsReplReady => run_is_repl_ready(&prompts, &cli),
+                Subcommand::GetLastCommand => run_get_last_command(&prompts, &cli),
+                Subcommand::ExecuteCommand {
+                    command,
+                    check,
+                    timeout,
+                } => run_execute_command(&prompts, &cli, command, *check, *timeout),
+                _ => unreachable!("prompt-less subcommands handled above"),
+            }
+        }
     };
 
     match result {
@@ -114,52 +143,70 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_is_repl_ready(prompt: &Prompt, cli: &Cli) -> Result<(), String> {
+fn build_prompts(cli: &Cli) -> Result<Prompts, String> {
+    if cli.kind.is_empty() && cli.prompt.is_empty() {
+        return Err("no prompts configured: pass --prompt REGEX or --kind KIND".into());
+    }
+    let kinds = kinds::load();
+    Prompts::from_kinds(&cli.kind, &kinds, &cli.prompt)
+}
+
+fn run_is_repl_ready(prompt: &Prompts, cli: &Cli) -> Result<(), String> {
     let captured = tmux::capture_pane(&cli.pane, cli.max_lines, cli.socket.as_deref())?;
     let lines = core::split_lines(&captured);
-    let ready = is_repl_ready(prompt, &lines);
-    print_json(
-        &ReadyOutput {
-            kind: ready.then(|| cli.prompt.clone()),
-            is_ready: ready,
-        },
-        cli.pretty,
-    );
+    let kind = core::detect_idle_kind(prompt, &lines);
+    let out = render_map(&[
+        (
+            "kind",
+            match kind {
+                Some(k) => YamlValue::Str(k),
+                None => YamlValue::Null,
+            },
+        ),
+        ("is_ready", YamlValue::Bool(kind.is_some())),
+    ]);
+    print!("{out}");
     Ok(())
 }
 
-fn run_get_last_command(prompt: &Prompt, cli: &Cli) -> Result<(), String> {
+fn run_get_last_command(prompt: &Prompts, cli: &Cli) -> Result<(), String> {
     let captured = tmux::capture_pane(&cli.pane, cli.max_lines, cli.socket.as_deref())?;
     let lines = core::split_lines(&captured);
     let (last_command, output) = extract_last_command_and_output(&lines, prompt);
-    print_json(&LastCommandOutput { last_command, output }, cli.pretty);
+    let out = render_map(&[
+        ("last_command", opt_str(last_command.as_deref())),
+        ("output", opt_str(output.as_deref())),
+    ]);
+    print!("{out}");
     Ok(())
 }
 
 fn run_execute_command(
-    prompt: &Prompt,
+    prompt: &Prompts,
     cli: &Cli,
     command: &str,
     check: f64,
     timeout: f64,
 ) -> Result<(), String> {
-    // Pre-flight: is the REPL ready and showing our prompt?
+    // Pre-flight: is the REPL idle and showing one of our prompts?
     let captured = tmux::capture_pane(&cli.pane, cli.max_lines, cli.socket.as_deref())?;
     let lines = core::split_lines(&captured);
     if !is_repl_ready(prompt, &lines) {
-        print_json(
-            &ExecOutput {
-                status: "error".into(),
-                reason: Some("REPL is not ready (no prompt detected).".into()),
-                last_command: None,
-                output: None,
-            },
-            cli.pretty,
-        );
+        let out = render_map(&[
+            ("status", YamlValue::Str("error")),
+            (
+                "reason",
+                YamlValue::Str("REPL is not ready (no prompt detected)."),
+            ),
+            ("last_command", YamlValue::Null),
+            ("output", YamlValue::Null),
+        ]);
+        print!("{out}");
         return Ok(());
     }
 
-    // Send the command, then wait until the REPL is idle again.
+    // Send the command, then wait until the REPL is idle again. The
+    // pre-flight capture doubles as the pre-send state for change detection.
     tmux::send_keys(&cli.pane, command, cli.socket.as_deref())?;
     let final_lines = wait_for_idle(
         &cli.pane,
@@ -168,30 +215,59 @@ fn run_execute_command(
         check,
         Some(timeout),
         cli.socket.as_deref(),
+        &captured,
     )?;
     let final_refs: Vec<&str> = final_lines.iter().map(String::as_str).collect();
     let (last_command, output) = extract_last_command_and_output(&final_refs, prompt);
 
-    print_json(
-        &ExecOutput {
-            status: "ok".into(),
-            reason: None,
-            last_command,
-            output,
-        },
-        cli.pretty,
-    );
+    let out = render_map(&[
+        ("status", YamlValue::Str("ok")),
+        ("last_command", opt_str(last_command.as_deref())),
+        ("output", opt_str(output.as_deref())),
+    ]);
+    print!("{out}");
     Ok(())
 }
 
-fn print_json<T: Serialize>(value: &T, pretty: bool) {
-    let rendered = if pretty {
-        serde_json::to_string_pretty(value)
-    } else {
-        serde_json::to_string(value)
-    };
-    match rendered {
-        Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("muxxy: failed to serialize output: {e}"),
+fn run_split_pane(
+    cli: &Cli,
+    vertical: bool,
+    horizontal: bool,
+    size: Option<&str>,
+    commands: &[String],
+    sleeps: &[f64],
+) -> Result<(), String> {
+    let use_vertical = vertical || !horizontal;
+    let new_pane = tmux::split_pane(&cli.pane, use_vertical, size, cli.socket.as_deref())?;
+
+    // Feed setup commands to the new pane, sleeping in between.
+    for (i, command) in commands.iter().enumerate() {
+        tmux::send_keys(&new_pane, command, cli.socket.as_deref())?;
+        if let Some(s) = sleeps.get(i)
+            && *s > 0.0
+        {
+            std::thread::sleep(Duration::from_secs_f64(*s));
+        }
+    }
+
+    let out = render_map(&[("pane", YamlValue::Str(&new_pane))]);
+    print!("{out}");
+    Ok(())
+}
+
+fn run_send_keys(cli: &Cli, commands: &[String], sleep: f64) -> Result<(), String> {
+    for (i, command) in commands.iter().enumerate() {
+        if i > 0 && sleep > 0.0 {
+            std::thread::sleep(Duration::from_secs_f64(sleep));
+        }
+        tmux::send_keys(&cli.pane, command, cli.socket.as_deref())?;
+    }
+    Ok(())
+}
+
+fn opt_str(s: Option<&str>) -> YamlValue<'_> {
+    match s {
+        Some(v) => YamlValue::Str(v),
+        None => YamlValue::Null,
     }
 }

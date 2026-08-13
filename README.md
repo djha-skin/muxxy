@@ -3,44 +3,71 @@
 A command-line tool for interacting with a REPL running inside a
 [tmux](https://github.com/tmux/tmux) pane — a Rust CLI mirror of the
 [`tmux-repl-mcp`](https://github.com/djha-skin/tmux-repl-mcp) MCP server's
-three tools. Where the MCP server keys off named REPL "kinds", muxxy takes a
-single `--prompt` regex, so any REPL — Python, `irb`, Lisp, a shell, whatever —
-works as long as you can describe its prompt.
+tools. Where the MCP server keys off named REPL "kinds", muxxy matches a set
+of prompt regexes, so any REPL — Python, `irb`, Lisp, a shell, whatever —
+works as long as you can describe its prompt (or use a built-in `--kind`).
 
 It talks to tmux through the [`tmux_interface`](https://crates.io/crates/tmux_interface)
-Rust crate's typed command builders.
+Rust crate's typed command builders, and prints **YAML** with multiline output
+as literal block scalars — nearly identical to what the REPL printed, and
+still machine-consumable.
 
 ## Usage
 
 ```text
-muxxy [OPTIONS] --prompt <PROMPT> <COMMAND>
+muxxy [OPTIONS] <COMMAND>
 ```
 
-`--prompt` is a Rust `regex` syntax pattern matched against the last line of
-the pane, e.g. `'^>>> '` for a Python REPL or `'[^$#]+[$#] *'` for a shell.
+Prompt patterns are Rust `regex` syntax. Give one or more `--prompt` regexes,
+or pick built-in presets with `--kind` (both can be combined):
+
+```bash
+# Python
+muxxy --prompt '^>>> ' execute-command '2 + 3'
+
+# SBCL: top-level `* `, numbered debugger prompts `0]`, and `ldb> `
+muxxy --kind sbcl execute-command '(error "boom")'
+```
+
+A REPL can show several prompt styles — the SBCL debugger is a *valid command
+boundary*: after a command errors and drops into the debugger, the `0] `
+prompt is detected as ready and you can keep executing there.
+
+## Commands
 
 ### `is-repl-ready`
 
-Check whether the pane is currently showing a bare prompt (i.e. the REPL is
-idle and ready for input). Returns `{"kind": <prompt>, "is_ready": true}` when
-idle, or `{"kind": null, "is_ready": false}` when busy or unrecognised:
+Check whether the pane is showing a bare prompt (i.e. the REPL is idle and
+ready for input). Idle means *bare*: an echoed command line like
+`>>> time.sleep(5)` starts with the prompt but the REPL is busy, so it is not
+reported ready.
 
 ```bash
 muxxy --prompt '^>>> ' is-repl-ready
-# {"kind":"^>>> ","is_ready":true}
 ```
+
+```yaml
+kind: "^>>> "
+is_ready: true
+```
+
+`kind` is the matching `--kind` name when one was used, otherwise the matching
+prompt regex; `null` when the pane is busy or unrecognised.
 
 ### `get-last-command`
 
 Look back through the pane history for a complete prompt → command → output →
-prompt block and return the last command and its output:
+prompt block and return the last command and its output. Both fields are
+`null` when no complete block is found.
 
 ```bash
 muxxy --prompt '^>>> ' get-last-command
-# {"last_command":"2 + 3","output":"5"}
 ```
 
-Both fields are `null` when no complete block is found or the REPL is busy.
+```yaml
+last_command: 2 + 3
+output: "5"
+```
 
 ### `execute-command`
 
@@ -48,31 +75,83 @@ Send a command to the REPL and wait — polling the pane, never guessing at
 `sleep` durations — until the REPL is idle again, then return the output:
 
 ```bash
-muxxy --prompt '^>>> ' execute-command '2 + 3' --check 0.2
-# {"status":"ok","last_command":"2 + 3","output":"5"}
+muxxy --prompt '^>>> ' execute-command '[print(i) for i in range(3)]' --check 0.1
+```
+
+```yaml
+status: ok
+last_command: "[print(i) for i in range(3)]"
+output: |-
+  0
+  1
+  2
+  [None, None, None, None]
 ```
 
 Steps:
 
-1. Verifies the REPL is idle and showing the `--prompt` pattern.
+1. Verifies the REPL is idle and showing one of the prompt patterns.
 2. Sends the command via `tmux send-keys`.
-3. Waits (polling every `--check` seconds) until the prompt reappears.
-4. Returns `{"status": "ok", "last_command": ..., "output": ...}`.
+3. Waits for the pane to change (the command echo), then polls every
+   `--check` seconds until a bare prompt reappears.
+4. Returns `status`, `last_command`, and `output`.
 
-If the REPL is busy or no prompt is detected up front, it returns
-`{"status": "error", "reason": ...}` instead.
+If the REPL is busy up front, it returns `{"status": "error", "reason": ...}`
+instead. Pass `--timeout <SECS>` to bound the wait.
+
+### `split-pane` — set up a REPL pane
+
+Split the current pane (or the `--pane` target), creating a new pane beside
+it, and optionally feed it setup commands with sleeps in between — exactly
+the flow for getting a REPL running in a visible pane you can watch:
+
+```bash
+muxxy split-pane --command 'sbcl --noinform' --sleep 3
+```
+
+```yaml
+pane: "%1"
+```
+
+Then target the new pane with `--pane`:
+
+```bash
+muxxy --pane '%1' --kind sbcl execute-command '(+ 40 2)'
+```
+
+`--command` and `--sleep` are repeatable and zip in order (sleeps default to
+0), so one call can send several commands with a pause between each.
+`--vertical` splits with the new pane below (stacked) instead of beside, and
+`--size` sets the new pane size as lines (`20`) or percent (`50%`).
+
+### `send-keys`
+
+Send one or more commands (each followed by Enter) to a pane, sleeping
+`--sleep` seconds between commands:
+
+```bash
+muxxy --pane '%1' send-keys 'sbcl' --sleep 8 '(+ 1 2)'
+```
 
 ## Options
 
 | Flag | Description | Default |
 |---|---|---|
-| `--prompt <REGEX>` | Prompt pattern for the REPL (required) | — |
-| `--pane <PANE>` | tmux pane target, e.g. `0` or `mysess:0.0` | `0` |
+| `--prompt <REGEX>` | Prompt pattern (repeatable; required for prompt-based commands) | — |
+| `--kind <KIND>` | Built-in preset: `python`, `ipython`, `bash`, `sh`, `zsh`, `node`, `irb`, `iex`, `lisp`, `sbcl`, `goose` | — |
+| `-t, --pane <PANE>` | tmux pane target, e.g. `0`, `mysess:0.0`, `%1` | `0` |
 | `--max-lines <N>` | Lines to capture from the pane | `200` |
 | `--socket <PATH>` | tmux server socket path (`tmux -S`) | default server |
 | `--check <SECS>` | Poll interval for `execute-command` | `2.0` |
 | `--timeout <SECS>` | Abort `execute-command` after this long (`0` = forever) | `0` |
-| `--pretty` | Pretty-print JSON output | off |
+
+Custom kinds can be added via the `TMUX_REPL_KINDS` environment variable — a
+JSON object mapping kind names to a regex string or array of regex strings,
+merged over the built-ins:
+
+```bash
+export TMUX_REPL_KINDS='{"myrepl": "^myrepl> ", "sbcl": ["^\\* ", "^[0-9]+\\] ?"]}'
+```
 
 ## Build
 
@@ -84,16 +163,19 @@ cargo install --path .    # install into ~/.cargo/bin
 ## Development
 
 ```bash
-cargo test      # unit tests for prompt matching and extraction
-cargo clippy    # lints
+cargo test       # unit tests + tmux-backed integration tests (skipped without tmux)
+cargo clippy     # lints
 ```
+
+The integration tests spin up their own isolated tmux server on a dedicated
+socket for each test, so they never touch your running tmux sessions.
 
 ## Notes
 
 - Captures use `tmux capture-pane -p -N` so prompt patterns ending in a
   literal space (e.g. `^>>> `) match despite tmux trimming trailing
   whitespace; output lines have trailing whitespace trimmed.
-- Readiness uses "bare prompt" semantics: a line like `>>> time.sleep(5)`
-  *starts* with the prompt but the REPL is busy, so it is not reported ready.
+- YAML strings that a parser would read as another type (numbers, `true`,
+  `null`, timestamps, ...) are quoted so they round-trip as strings.
 - Like the MCP server, `execute-command` waits indefinitely by default; pass
   `--timeout` to bound the wait.
