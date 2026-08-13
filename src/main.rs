@@ -98,12 +98,14 @@ enum Subcommand {
         #[arg(long, default_value_t = 0.0)]
         sleep: f64,
     },
+    /// Destroy the pane
+    KillPane,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // split-pane and send-keys never need prompt patterns; the rest do.
+    // split-pane, send-keys and kill-pane never need prompt patterns.
     let result = match &cli.command {
         Subcommand::SplitPane {
             vertical,
@@ -113,6 +115,7 @@ fn main() -> ExitCode {
             sleep,
         } => run_split_pane(&cli, *vertical, *horizontal, size.as_deref(), command, sleep),
         Subcommand::SendKeys { commands, sleep } => run_send_keys(&cli, commands, *sleep),
+        Subcommand::KillPane => run_kill_pane(&cli),
         command => {
             let prompts = match build_prompts(&cli) {
                 Ok(p) => p,
@@ -263,6 +266,10 @@ fn run_send_keys(cli: &Cli, commands: &[String], sleep: f64) -> Result<(), Strin
         tmux::send_keys(&cli.pane, command, cli.socket.as_deref())?;
     }
     Ok(())
+}
+
+fn run_kill_pane(cli: &Cli) -> Result<(), String> {
+    tmux::kill_pane(&cli.pane, cli.socket.as_deref())
 }
 
 fn opt_str(s: Option<&str>) -> YamlValue<'_> {

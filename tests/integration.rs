@@ -229,3 +229,62 @@ fn split_pane_and_send_keys_setup_flow() {
     assert_eq!(v["status"].as_str(), Some("ok"));
     assert_eq!(v["output"].as_str(), Some("2"));
 }
+
+#[test]
+fn kill_pane_destroys_the_pane() {
+    let Some(server) = TestServer::start() else { return };
+    let out = server.muxxy(&["split-pane"]);
+    let v = TestServer::parse_yaml(&out);
+    let pane = v["pane"].as_str().expect("split-pane must print the new pane id").to_string();
+
+    let pane_exists = |server: &TestServer| {
+        server
+            .tmux(&["list-panes", "-F", "#{pane_id}"])
+            .is_some_and(|out| out.lines().any(|l| l.trim() == pane))
+    };
+
+    // The new pane exists...
+    assert!(pane_exists(&server));
+
+    // ...until we kill it with the tool.
+    let out = server.muxxy(&["--pane", &pane, "kill-pane"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(!pane_exists(&server));
+}
+
+#[test]
+fn multiline_input_with_continuation_prompt() {
+    let Some(server) = TestServer::start() else { return };
+    // A multi-line python block, sent with embedded newlines plus a final
+    // Enter to close the block. The continuation (...) and top-level (>>>)
+    // prompts are both in the prompt set.
+    let out = server.muxxy(&[
+        "--pane",
+        "0",
+        "send-keys",
+        "for i in range(3):\n    print('row', i)\n",
+    ]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    // Wait for the block to finish executing.
+    let mut done = false;
+    for _ in 0..40 {
+        let out = server.muxxy(&[
+            "--prompt",
+            "^>>> ",
+            "--prompt",
+            r"^\.\.\. ",
+            "get-last-command",
+        ]);
+        let v = TestServer::parse_yaml(&out);
+        if let Some(cmd) = v["last_command"].as_str() {
+            if cmd.contains("print('row', i)") {
+                assert_eq!(v["output"].as_str(), Some("row 0\nrow 1\nrow 2"));
+                done = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(done, "multi-line block output never appeared");
+}

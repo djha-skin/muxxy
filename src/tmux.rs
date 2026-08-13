@@ -1,7 +1,7 @@
 //! Thin wrappers around tmux, built on the `tmux_interface` crate's typed
 //! command builders instead of hand-rolled `tmux` subprocess invocations.
 
-use tmux_interface::{CapturePane, PaneSize, SendKeys, SplitWindow, Tmux};
+use tmux_interface::{CapturePane, KillPane, PaneSize, SendKeys, SplitWindow, Tmux};
 
 /// Capture the last `max_lines` lines of the given tmux pane as a string.
 ///
@@ -95,6 +95,20 @@ pub fn split_pane(
         return Err("tmux split-window printed no pane id".into());
     }
     Ok(pane_id)
+}
+
+/// Destroy the given tmux pane.
+///
+/// Equivalent to `tmux kill-pane -t <pane>`.
+pub fn kill_pane(pane: &str, socket: Option<&str>) -> Result<(), String> {
+    let status = run(KillPane::new().target_pane(pane), socket)?
+        .status()
+        .map_err(|e| format!("failed to run tmux: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("tmux kill-pane failed for pane {pane:?}"));
+    }
+    Ok(())
 }
 
 fn parse_size(s: &str) -> Result<PaneSize, String> {

@@ -123,13 +123,20 @@ fn last_prompt_index(lines: &[&str], prompt: &Prompts) -> Option<usize> {
     lines.iter().rposition(|l| prompt.is_prompt_line(l))
 }
 
-/// Index of the last prompt line strictly before `end_idx`, or `None`.
+/// Index of the last prompt line strictly before `end_idx` that actually
+/// carries a command, or `None`.
+///
+/// A bare prompt line (one whose prompt prefix strips to nothing — e.g.
+/// python's `...` continuation echo of a blank line, or a plain `>>> `) is
+/// an *end* boundary, not the start of a command block, so it is skipped.
 fn second_to_last_prompt_index(
     lines: &[&str],
     prompt: &Prompts,
     end_idx: usize,
 ) -> Option<usize> {
-    lines[..end_idx].iter().rposition(|l| prompt.is_prompt_line(l))
+    lines[..end_idx].iter().rposition(|l| {
+        prompt.is_prompt_line(l) && !prompt.strip_prompt(l).is_empty()
+    })
 }
 
 /// Parse `(last_command, output)` out of the pane lines.
@@ -152,8 +159,12 @@ pub fn extract_last_command_and_output(
     };
 
     let last_command = prompt.strip_prompt(lines[start_idx]);
+    // Drop bare-prompt-only lines from the output (e.g. the empty `...`
+    // continuation line python echoes when a block is closed), and trim
+    // width padding from each line.
     let output = lines[start_idx + 1..end_idx]
         .iter()
+        .filter(|l| !prompt.strip_prompt(l).is_empty())
         .map(|l| l.trim_end())
         .collect::<Vec<_>>()
         .join("\n");
@@ -358,5 +369,22 @@ mod tests {
         let prompt = sbcl_prompt();
         assert_eq!(prompt.strip_prompt("0] (restart 1)"), "(restart 1)");
         assert_eq!(prompt.strip_prompt("* (foo)"), "(foo)");
+    }
+
+    #[test]
+    fn multiline_block_extraction_skips_bare_continuation_prompts() {
+        let prompt =
+            Prompts::from_prompts(&["^>>> ".to_string(), r"^\.\.\. ".to_string()]).unwrap();
+        // A multi-line python block: the closing blank line echoes a bare
+        // "..." prompt, which must not be taken as the command start, and
+        // must not leak into the output.
+        // capture-pane -N pads lines to the terminal width, so bare
+        // continuation prompts carry trailing spaces.
+        let lines = split_lines(
+            ">>> for i in range(3):\n...     print(\"row\", i)          \n...                    \nrow 0                  \nrow 1                  \n>>>                    \n",
+        );
+        let (cmd, out) = extract_last_command_and_output(&lines, &prompt);
+        assert_eq!(cmd.as_deref(), Some("print(\"row\", i)"));
+        assert_eq!(out.as_deref(), Some("row 0\nrow 1"));
     }
 }

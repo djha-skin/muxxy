@@ -133,6 +133,22 @@ Send one or more commands (each followed by Enter) to a pane, sleeping
 muxxy --pane '%1' send-keys 'sbcl' --sleep 8 '(+ 1 2)'
 ```
 
+Key names pass through tmux's parser, so `send-keys 'C-c'` sends Ctrl-C, and
+embedded newlines submit lines — multi-line input works by sending the block
+with newlines plus a final blank line:
+
+```bash
+muxxy --pane '%1' --prompt '^>>> ' --prompt '^\.\.\. ' send-keys $'for i in range(3):\n    print(i)\n'
+```
+
+### `kill-pane`
+
+Destroy the pane, so an agent can clean up after itself:
+
+```bash
+muxxy --pane '%1' kill-pane
+```
+
 ## Options
 
 | Flag | Description | Default |
@@ -177,5 +193,7 @@ socket for each test, so they never touch your running tmux sessions.
   whitespace; output lines have trailing whitespace trimmed.
 - YAML strings that a parser would read as another type (numbers, `true`,
   `null`, timestamps, ...) are quoted so they round-trip as strings.
+- Bare prompt lines (e.g. python's empty `...` continuation echo) are not
+  treated as command-start boundaries and are dropped from extracted output.
 - Like the MCP server, `execute-command` waits indefinitely by default; pass
   `--timeout` to bound the wait.
