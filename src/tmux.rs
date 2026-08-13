@@ -61,6 +61,7 @@ pub fn split_pane(
     target: &str,
     vertical: bool,
     size: Option<&str>,
+    directory: Option<&str>,
     socket: Option<&str>,
 ) -> Result<String, String> {
     let mut command = SplitWindow::new().print().format("#{pane_id}").target_pane(target);
@@ -68,6 +69,9 @@ pub fn split_pane(
         command = command.vertical();
     } else {
         command = command.horizontal();
+    }
+    if let Some(dir) = directory {
+        command = command.start_directory(dir);
     }
 
     let parsed_size = match size {

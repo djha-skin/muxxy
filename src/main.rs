@@ -79,6 +79,10 @@ enum Subcommand {
         #[arg(long)]
         size: Option<String>,
 
+        /// Start directory for the new pane (tmux split-window -c)
+        #[arg(long)]
+        directory: Option<String>,
+
         /// Setup command to send to the new pane (repeatable, in order)
         #[arg(long)]
         command: Vec<String>,
@@ -111,9 +115,18 @@ fn main() -> ExitCode {
             vertical,
             horizontal,
             size,
+            directory,
             command,
             sleep,
-        } => run_split_pane(&cli, *vertical, *horizontal, size.as_deref(), command, sleep),
+        } => run_split_pane(
+            &cli,
+            *vertical,
+            *horizontal,
+            size.as_deref(),
+            directory.as_deref(),
+            command,
+            sleep,
+        ),
         Subcommand::SendKeys { commands, sleep } => run_send_keys(&cli, commands, *sleep),
         Subcommand::KillPane => run_kill_pane(&cli),
         command => {
@@ -237,11 +250,13 @@ fn run_split_pane(
     vertical: bool,
     horizontal: bool,
     size: Option<&str>,
+    directory: Option<&str>,
     commands: &[String],
     sleeps: &[f64],
 ) -> Result<(), String> {
     let use_vertical = vertical || !horizontal;
-    let new_pane = tmux::split_pane(&cli.pane, use_vertical, size, cli.socket.as_deref())?;
+    let new_pane =
+        tmux::split_pane(&cli.pane, use_vertical, size, directory, cli.socket.as_deref())?;
 
     // Feed setup commands to the new pane, sleeping in between.
     for (i, command) in commands.iter().enumerate() {

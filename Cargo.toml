@@ -1,9 +1,13 @@
 [package]
 name = "muxxy"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Interact with a REPL running inside a tmux pane, from the command line"
 license = "MIT"
+repository = "https://github.com/djha-skin/muxxy"
+readme = "README.md"
+keywords = ["tmux", "repl", "cli", "terminal", "automation"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

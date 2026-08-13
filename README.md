@@ -1,5 +1,7 @@
 # muxxy
 
+![muxxy](docs/muxxy.png)
+
 A command-line tool for interacting with a REPL running inside a
 [tmux](https://github.com/tmux/tmux) pane — a Rust CLI mirror of the
 [`tmux-repl-mcp`](https://github.com/djha-skin/tmux-repl-mcp) MCP server's
@@ -11,6 +13,33 @@ It talks to tmux through the [`tmux_interface`](https://crates.io/crates/tmux_in
 Rust crate's typed command builders, and prints **YAML** with multiline output
 as literal block scalars — nearly identical to what the REPL printed, and
 still machine-consumable.
+
+## Working visibly, or headless
+
+muxxy supports two working styles, and which one you want depends on whether
+you are sitting in tmux:
+
+- **Visible** — you're in tmux and want to watch the AI work. The agent
+  splits a pane **by default** (or when you say *"I'm in tmux, keep things
+  visible"*) and runs the REPL there, in front of your eyes:
+
+  ```bash
+  muxxy split-pane --directory ~/Code/proj \
+    --command 'cd ~/Code/proj && clrepl' --sleep 8   # pane: "%1"
+  muxxy --pane '%1' --kind sbcl execute-command '(foo)'
+  muxxy --pane '%1' kill-pane                        # clean up
+  ```
+
+- **Headless** — isolated work with nothing on screen. The agent keeps its
+  own hidden tmux session and targets it with `--socket`:
+
+  ```bash
+  tmux -L mywork new-session -d -s work 'clrepl'
+  muxxy --socket /tmp/tmux-1000/mywork --kind sbcl execute-command '(foo)'
+  ```
+
+Either way, one invocation talks to exactly one pane (`-t/--pane`); for
+"both panes" just invoke twice. Panes are fully isolated from each other.
 
 ## Usage
 
@@ -169,11 +198,31 @@ merged over the built-ins:
 export TMUX_REPL_KINDS='{"myrepl": "^myrepl> ", "sbcl": ["^\\* ", "^[0-9]+\\] ?"]}'
 ```
 
+## Agent skill
+
+For AI coding agents (Claude Code, Goose, Cursor, ...), muxxy ships an agent
+skill — [`.agents/skills/muxxy/SKILL.md`](.agents/skills/muxxy/SKILL.md) —
+covering how to drive Python, shell, and SBCL REPLs, the visible/headless
+working modes, and the gotchas with their workarounds.
+
+Install it into a project with the skills CLI:
+
+```bash
+npx skills add djha-skin/muxxy --skill muxxy
+```
+
+or by copying the directory by hand:
+
+```bash
+mkdir -p .agents/skills && cp -r <repo>/.agents/skills/muxxy .agents/skills/
+```
+
 ## Build
 
 ```bash
 cargo build --release     # binary at target/release/muxxy
 cargo install --path .    # install into ~/.cargo/bin
+cargo install muxxy       # ...or from crates.io
 ```
 
 ## Development
