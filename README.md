@@ -47,20 +47,35 @@ Either way, one invocation talks to exactly one pane (`-t/--pane`); for
 muxxy [OPTIONS] <COMMAND>
 ```
 
-Prompt patterns are Rust `regex` syntax. Give one or more `--prompt` regexes,
-or pick built-in presets with `--kind` (both can be combined):
+Point muxxy at a REPL with a `--prompt` regex (repeatable, since a REPL can
+have several prompt styles) or a built-in `--kind`. It works with *any* REPL
+whose prompt you can describe — Python, Ruby, shells, Node, and the Lisp
+family included:
 
 ```bash
-# Python
-muxxy --prompt '^>>> ' execute-command '2 + 3'
+# Python — even multi-line blocks (note the continuation prompt)
+muxxy --prompt '^>>> ' --prompt '^\.\.\. ' send-keys $'for i in range(3):\n    print(i*10)\n'
+muxxy --prompt '^>>> ' --prompt '^\.\.\. ' get-last-command
 
-# SBCL: top-level `* `, numbered debugger prompts `0]`, and `ldb> `
+# Ruby (irb)
+muxxy --kind irb execute-command '[1, 2, 3].map { |x| x * 2 }'
+
+# SBCL
+muxxy --kind sbcl execute-command '(+ 40 2)'
+
+# SBCL — commands that error drop into the debugger, and you keep going there
 muxxy --kind sbcl execute-command '(error "boom")'
+muxxy --kind sbcl execute-command '(invoke-restart (find-restart (quote abort)))'
 ```
 
-A REPL can show several prompt styles — the SBCL debugger is a *valid command
-boundary*: after a command errors and drops into the debugger, the `0] `
-prompt is detected as ready and you can keep executing there.
+The SBCL debugger prompt (`0]`, `ldb> `) is just another prompt as far as
+muxxy is concerned — a valid command boundary, so you can keep typing at it.
+And if your REPL isn't in the built-in `--kind` table, one or two `--prompt`
+regexes are all it takes:
+
+```bash
+muxxy --prompt '^myrepl> ' execute-command 'something'
+```
 
 ## Commands
 

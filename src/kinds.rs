@@ -14,7 +14,9 @@ pub fn builtin() -> HashMap<String, Vec<String>> {
     kinds.insert("sh".into(), vec![r"^[^$#]+[$#] *".into()]);
     kinds.insert("zsh".into(), vec![r"^[^$+][$#] *".into()]);
     kinds.insert("node".into(), vec![r"^> ".into()]);
-    kinds.insert("irb".into(), vec![r"^irb\(.*\):\d+:\d+> $".into()]);
+    // Modern irb (Ruby 3.x) prints `irb(main):001> `; older irb had an extra
+    // `:0` line-number field (`irb(main):001:0> `). Match both.
+    kinds.insert("irb".into(), vec![r"^irb\(.*\):\d+(:\d+)?> *".into()]);
     kinds.insert("iex".into(), vec![r"^iex\(\d+\)> $".into()]);
     // Lisp ready prompts: top-level REPL and debugger prompts. A debugger
     // prompt is a valid command boundary — the user can type at it.
@@ -105,5 +107,18 @@ mod tests {
         assert!(kinds["sbcl"].iter().any(|p| p == r"^ *[0-9]+\] ?"));
         assert!(kinds.contains_key("lisp"));
         assert!(kinds.contains_key("bash"));
+    }
+
+    #[test]
+    fn irb_kind_matches_old_and_new_prompt_formats() {
+        let kinds = builtin();
+        let patterns = &kinds["irb"];
+        let re = regex::Regex::new(&patterns[0]).unwrap();
+        // Modern irb (Ruby 3.x)
+        assert!(re.is_match("irb(main):001> "));
+        // Older irb with the extra line-number field
+        assert!(re.is_match("irb(main):001:0> "));
+        // Command typed at the prompt
+        assert!(re.is_match("irb(main):001> [1,2].map { |x| x }"));
     }
 }

@@ -277,12 +277,12 @@ fn multiline_input_with_continuation_prompt() {
             "get-last-command",
         ]);
         let v = TestServer::parse_yaml(&out);
-        if let Some(cmd) = v["last_command"].as_str() {
-            if cmd.contains("print('row', i)") {
-                assert_eq!(v["output"].as_str(), Some("row 0\nrow 1\nrow 2"));
-                done = true;
-                break;
-            }
+        if let Some(cmd) = v["last_command"].as_str()
+            && cmd.contains("print('row', i)")
+        {
+            assert_eq!(v["output"].as_str(), Some("row 0\nrow 1\nrow 2"));
+            done = true;
+            break;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
