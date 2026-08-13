@@ -33,7 +33,7 @@ Give one or more `--prompt` regexes (Rust `regex` syntax), or use a built-in
 | `zsh` | `^[^$+][$#] *` |
 | `node` | `^> ` |
 | `irb` | `^irb\(.*\):\d+:\d+> $` |
-| `sbcl` | `* `, numbered debugger prompts `0]`, `ldb> `, package prompts |
+| `sbcl` | `* `, numbered debugger prompts `0]`, `ldb> `, package prompts — note: nested debugger prompt `0[2]` (level ≥ 2) is NOT matched; add `^ *[0-9]+(\[[0-9]+\]|\])` via `--prompt` to cover it |
 | `lisp` | like `sbcl` without `ldb> ` |
 | `ipython` | `^In \[\d+\]: ` |
 
@@ -84,8 +84,31 @@ errors and drops into the debugger (prompt `0]`), muxxy reports ready and you
 can keep executing there — run `(describe 42)` or invoke a restart:
 
 ```bash
-muxxy --kind sbcl execute-command '(invoke-restart (find-restart (quote abort)))'
+muxxy --kind sbcl execute-command '4' --timeout 10   # numbered restart: exit debugger
 ```
+
+**Exiting the debugger: use the numbered restart, not `(abort)`.** SBCL
+evaluates `(abort)` inside the debugger's own evaluation context, which does
+*not* exit to top level — the prompt stays at `0]`. Send the restart number
+instead (`0`–`n` as printed in the restart list, e.g. `1` or `4` for *Exit
+debugger, returning to top level*).
+
+**Beware nested debugger prompts.** An error raised *inside* the debugger
+(level ≥ 2) changes the prompt to `0[2]` (number `[level]`), which the built-in
+`sbcl` kind regex `^ *[0-9]+\] ?` does **not** match — muxxy will then report
+not-ready forever and `execute-command` times out. Work around it by adding a
+custom prompt that matches both forms without matching numeric output:
+
+```bash
+muxxy --prompt '^\* ' --prompt '^ *[0-9]+(\[[0-9]+\]|\])' is-repl-ready
+```
+
+**Multi-line input confuses rlwrap's echo.** `send-keys` (or `execute-command`
+with embedded newlines) makes rlwrap echo the input lines *without* the `* `
+prompt prefix, so muxxy loses the command boundary: `last_command` comes back
+stale and `output` includes earlier history. Prefer single-line forms or
+`execute-command --lines ...` when you need clean output capture, and pass
+`--max-lines` generously for anything that prints a lot (loads, test runs).
 
 ## Setting up a REPL pane (agent-driven)
 
@@ -151,7 +174,11 @@ they asked you to work quietly or in the background.
    `--timeout` when the command might not complete.
 3. **SBCL debugger prompts are normal prompts.** `0]`, `1]`, `ldb> ` are all
    valid ready states — you can type at them. That is a feature: it is how
-   you recover from errors through the tool.
+   you recover from errors through the tool. But the **nested** debugger
+   prompt `0[2]` (level ≥ 2) is *not* matched by the `sbcl` kind — add the
+   custom prompt `^ *[0-9]+(\[[0-9]+\]|\])` (plus `^\* `) to handle it.
+   To leave the debugger, send the numbered restart (`1`, `4`, ...) —
+   `(abort)` does not exit (see the SBCL section above).
 4. **Trailing-space prompts.** tmux trims trailing spaces and pads lines to
    the terminal width; muxxy captures with `-N` and tolerates both, so
    patterns like `^>>> ` (with the space) work.
@@ -166,7 +193,11 @@ they asked you to work quietly or in the background.
    both panes" just invoke twice. `split-pane` prints the new pane id —
    capture it, then use it.
 9. **History depth.** `get-last-command` and `execute-command` look back
-   `--max-lines` (default 200); raise it for busy panes.
+   `--max-lines` (default 200); raise it for busy panes. Commands that print
+   a lot (system loads, test suites, long listings) scroll their own command
+   line out of the 200-line window, so `execute-command` comes back with
+   `last_command: null, output: null` even though it ran fine — pass
+   `--max-lines 5000` (or more) for anything that prints heavily.
 10. **The last line of a multi-line block is the command.** For a block
     ending in `print(i)`, `last_command` is `print(i)`, not the whole block —
     that is inherent to prompt-line extraction.
@@ -178,3 +209,22 @@ they asked you to work quietly or in the background.
     `(find-package :foo)` returns NIL until the system is loaded. The SBCL
     prompt is `* ` (kind `sbcl`); give slow startup enough `--sleep` in
     `split-pane`.
+13. **Prompt regexes are matched against output lines too.** A `--prompt`
+    regex that can match a *prefix* of ordinary output (e.g. `^ *[0-9]+...`
+    matching the number `1024`) will make muxxy treat that output line as a
+    prompt: it gets stripped from `output` and can even look idle. Keep
+    prompt patterns anchored to the real prompt shape (the `sbcl` kind
+    requires the trailing `]`, so numeric results like `1024` are safe).
+14. **Custom prompt sets must cover every prompt style the REPL can show.**
+    If a command changes the prompt (SBCL `* ` ↔ debugger `0]`, Python
+    `>>> ` ↔ `...`), and your `--prompt` set only matches the old style,
+    `execute-command` will time out waiting for the new style. `--kind`
+    presets bundle all styles for this reason; when writing custom regexes
+    include them all.
+15. **rlwrap echoes multi-line input without the prompt prefix.** After a
+    `send-keys` multi-line block, the echoed lines lack the `* ` prefix, so
+    the next `execute-command`/`get-last-command` can report stale
+    `last_command` and history-mixed `output`. This is an rlwrap display
+    quirk muxxy can't fully paper over — close blocks with a trailing blank
+    line, then run a throwaway command (`(+ 1 1)`) to re-establish a clean
+    boundary before trusting `get-last-command`.
