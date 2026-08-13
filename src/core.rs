@@ -68,6 +68,22 @@ impl Prompts {
             .map(|(label, _)| label.as_str())
     }
 
+    /// Index of the first pattern that idle-matches the line, or `None`.
+    pub fn detect_idle_index(&self, line: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|(_, re)| idle_match(re, line))
+    }
+
+    /// True when `line` idle-matches the entry at `index`; when `index` is
+    /// `None`, true when it idle-matches any entry.
+    pub fn idle_matches_index(&self, index: Option<usize>, line: &str) -> bool {
+        match index {
+            Some(i) => self.entries.get(i).is_some_and(|(_, re)| idle_match(re, line)),
+            None => self.is_idle_prompt(line),
+        }
+    }
+
     /// Strip the prompt prefix from a command line: replace the first match
     /// of the first matching pattern and trim (like Python
     /// `re.sub(pattern, "", line, count=1).strip()`).
@@ -108,6 +124,11 @@ pub fn last_meaningful_line<'a>(lines: &[&'a str]) -> Option<&'a str> {
 /// REPL is idle and showing a known prompt.
 pub fn detect_idle_kind<'a>(prompt: &'a Prompts, lines: &[&str]) -> Option<&'a str> {
     last_meaningful_line(lines).and_then(|l| prompt.detect_idle(l))
+}
+
+/// Index of the prompt that the last meaningful line idle-matches, if any.
+pub fn detect_idle_index(prompt: &Prompts, lines: &[&str]) -> Option<usize> {
+    last_meaningful_line(lines).and_then(|l| prompt.detect_idle_index(l))
 }
 
 /// True if the last meaningful line of the pane is a bare prompt (i.e. the
@@ -185,6 +206,7 @@ pub fn extract_last_command_and_output(
 /// A fast command that echoes and finishes between polls passes phase 1
 /// immediately (the pane already differs from `pre_send`) and is caught by
 /// phase 2's idle check, so it cannot hang.
+#[allow(clippy::too_many_arguments)] // one knob per call site; grouping would hide intent
 pub fn wait_for_idle(
     pane: &str,
     prompt: &Prompts,
@@ -193,6 +215,7 @@ pub fn wait_for_idle(
     timeout: Option<f64>,
     socket: Option<&str>,
     pre_send: &str,
+    require_index: Option<usize>,
 ) -> Result<Vec<String>, String> {
     let check_dur = Duration::from_secs_f64(check.max(0.001));
     let started = Instant::now();
@@ -212,7 +235,12 @@ pub fn wait_for_idle(
         std::thread::sleep(check_dur);
     }
 
-    // Phase 2: wait until the REPL is idle again.
+    // Phase 2: wait until the REPL is idle again. Normally *any* prompt
+    // counts (a command that errors into the SBCL debugger is still
+    // "idle"). With `require_index`, only that specific prompt pattern
+    // counts — used for multi-line blocks, where the bare `...`
+    // continuation echo that python prints *before* executing a slow block
+    // must not be mistaken for completion.
     loop {
         if timeout_is_up(timeout, started) {
             return Err(format!(
@@ -223,12 +251,21 @@ pub fn wait_for_idle(
         let captured = tmux::capture_pane(pane, max_lines, socket)?;
         let lines = split_lines(&captured);
         match last_meaningful_line(&lines) {
-            Some(last) if prompt.is_idle_prompt(last) => {
+            Some(last) if prompt.idle_matches_index(require_index, last) => {
                 return Ok(lines.into_iter().map(str::to_string).collect());
             }
             _ => std::thread::sleep(check_dur),
         }
     }
+}
+
+/// Join `--lines` into a single sendable command: one line per element,
+/// with a trailing newline so the block is closed by a blank line (python
+/// compound statements execute on the blank line). The `send_keys` helper
+/// appends its own final Enter, so the string's trailing `\n` plus that
+/// Enter produce exactly one blank line.
+pub fn build_multi_line_text(lines: &[String]) -> String {
+    lines.join("\n") + "\n"
 }
 
 fn timeout_is_up(timeout: Option<f64>, started: Instant) -> bool {
@@ -369,6 +406,42 @@ mod tests {
         let prompt = sbcl_prompt();
         assert_eq!(prompt.strip_prompt("0] (restart 1)"), "(restart 1)");
         assert_eq!(prompt.strip_prompt("* (foo)"), "(foo)");
+    }
+
+    #[test]
+    fn multi_line_text_joins_lines_with_closing_blank_line() {
+        let text = build_multi_line_text(&[
+            "for i in range(3):".to_string(),
+            "    print(i)".to_string(),
+        ]);
+        assert_eq!(text, "for i in range(3):\n    print(i)\n");
+    }
+
+    #[test]
+    fn multi_line_text_single_line_gets_closing_enter() {
+        let text = build_multi_line_text(&["2 + 3".to_string()]);
+        assert_eq!(text, "2 + 3\n");
+    }
+
+    #[test]
+    fn detect_idle_index_returns_pattern_position() {
+        let prompt = py_prompt();
+        assert_eq!(prompt.detect_idle_index(">>> "), Some(0));
+        assert_eq!(prompt.detect_idle_index(">>> 2 + 2"), None);
+        assert_eq!(prompt.detect_idle_index("garbage"), None);
+    }
+
+    #[test]
+    fn idle_matches_index_respects_require_index() {
+        let prompt =
+            Prompts::from_prompts(&["^>>> ".to_string(), r"^\.\.\. ".to_string()]).unwrap();
+        // A bare continuation prompt idle-matches its own index but not the
+        // top-level index — that is how the multi-line wait loop avoids
+        // returning while a slow block is still running.
+        assert!(prompt.idle_matches_index(Some(0), ">>> "));
+        assert!(!prompt.idle_matches_index(Some(0), "... "));
+        assert!(prompt.idle_matches_index(Some(1), "... "));
+        assert!(prompt.idle_matches_index(None, "... "));
     }
 
     #[test]

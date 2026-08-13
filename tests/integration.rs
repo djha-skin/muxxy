@@ -253,6 +253,54 @@ fn kill_pane_destroys_the_pane() {
 }
 
 #[test]
+fn execute_command_with_lines_runs_multiline_block() {
+    let Some(server) = TestServer::start() else { return };
+    let out = server.muxxy(&[
+        "--prompt",
+        "^>>> ",
+        "--prompt",
+        r"^\.\.\. ",
+        "execute-command",
+        "--lines",
+        "for i in range(3):",
+        "--lines",
+        "    print('row', i)",
+        "--check",
+        "0.1",
+    ]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = TestServer::parse_yaml(&out);
+    assert_eq!(v["status"].as_str(), Some("ok"));
+    assert_eq!(v["output"].as_str(), Some("row 0\nrow 1\nrow 2"));
+}
+
+#[test]
+fn execute_command_with_lines_waits_for_slow_block() {
+    let Some(server) = TestServer::start() else { return };
+    // A slow multi-line block: python echoes a bare `...` continuation
+    // prompt *before* executing, which must not be mistaken for completion.
+    let out = server.muxxy(&[
+        "--prompt",
+        "^>>> ",
+        "--prompt",
+        r"^\.\.\. ",
+        "execute-command",
+        "--lines",
+        "import time",
+        "--lines",
+        "for i in range(3):",
+        "--lines",
+        "    time.sleep(0.5); print('tick', i)",
+        "--check",
+        "0.1",
+    ]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = TestServer::parse_yaml(&out);
+    assert_eq!(v["status"].as_str(), Some("ok"));
+    assert_eq!(v["output"].as_str(), Some("tick 0\ntick 1\ntick 2"));
+}
+
+#[test]
 fn multiline_input_with_continuation_prompt() {
     let Some(server) = TestServer::start() else { return };
     // A multi-line python block, sent with embedded newlines plus a final

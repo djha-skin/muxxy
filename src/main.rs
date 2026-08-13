@@ -54,15 +54,21 @@ enum Subcommand {
     GetLastCommand,
     /// Send a command to the REPL and wait for it to finish, then return output
     ExecuteCommand {
-        /// The command text to send to the REPL
-        command: String,
+        /// The command text to send to the REPL (use --lines for multi-line)
+        #[arg(required_unless_present = "lines", conflicts_with = "lines")]
+        command: Option<String>,
+
+        /// One line of a multi-line command (repeatable, in order); the
+        /// block is closed with a trailing blank line automatically
+        #[arg(long, value_name = "LINE")]
+        lines: Vec<String>,
 
         /// Seconds to wait between pane-state polls
         #[arg(long, default_value_t = 2.0)]
         check: f64,
 
         /// Abort after this many seconds (0 = wait forever)
-        #[arg(long, default_value_t = 0.0)]
+        #[arg(long, default_value_t = 60.0)]
         timeout: f64,
     },
     /// Split the pane, creating a new pane beside it; print the new pane's id
@@ -142,9 +148,10 @@ fn main() -> ExitCode {
                 Subcommand::GetLastCommand => run_get_last_command(&prompts, &cli),
                 Subcommand::ExecuteCommand {
                     command,
+                    lines,
                     check,
                     timeout,
-                } => run_execute_command(&prompts, &cli, command, *check, *timeout),
+                } => run_execute_command(&prompts, &cli, command.as_deref(), lines, *check, *timeout),
                 _ => unreachable!("prompt-less subcommands handled above"),
             }
         }
@@ -200,14 +207,21 @@ fn run_get_last_command(prompt: &Prompts, cli: &Cli) -> Result<(), String> {
 fn run_execute_command(
     prompt: &Prompts,
     cli: &Cli,
-    command: &str,
+    command: Option<&str>,
+    lines: &[String],
     check: f64,
     timeout: f64,
 ) -> Result<(), String> {
+    let multi_line = command.is_none();
+    let text = match command {
+        Some(c) => c.to_string(),
+        None => core::build_multi_line_text(lines),
+    };
+
     // Pre-flight: is the REPL idle and showing one of our prompts?
     let captured = tmux::capture_pane(&cli.pane, cli.max_lines, cli.socket.as_deref())?;
-    let lines = core::split_lines(&captured);
-    if !is_repl_ready(prompt, &lines) {
+    let pre_lines = core::split_lines(&captured);
+    if !is_repl_ready(prompt, &pre_lines) {
         let out = render_map(&[
             ("status", YamlValue::Str("error")),
             (
@@ -221,9 +235,19 @@ fn run_execute_command(
         return Ok(());
     }
 
+    // For multi-line blocks, wait for the *same* prompt pattern that was
+    // idle up front to reappear, not just any prompt: python echoes a bare
+    // `...` continuation prompt before executing a slow block, and that
+    // must not be mistaken for completion.
+    let require_index = if multi_line {
+        core::detect_idle_index(prompt, &pre_lines)
+    } else {
+        None
+    };
+
     // Send the command, then wait until the REPL is idle again. The
     // pre-flight capture doubles as the pre-send state for change detection.
-    tmux::send_keys(&cli.pane, command, cli.socket.as_deref())?;
+    tmux::send_keys(&cli.pane, &text, cli.socket.as_deref())?;
     let final_lines = wait_for_idle(
         &cli.pane,
         prompt,
@@ -232,6 +256,7 @@ fn run_execute_command(
         Some(timeout),
         cli.socket.as_deref(),
         &captured,
+        require_index,
     )?;
     let final_refs: Vec<&str> = final_lines.iter().map(String::as_str).collect();
     let (last_command, output) = extract_last_command_and_output(&final_refs, prompt);
