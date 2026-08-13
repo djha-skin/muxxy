@@ -13,6 +13,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   server running on" message. Both empty and blank (whitespace-only) socket
   paths are caught at argument parsing time with the message "socket path
   must not be empty".
+- **`--max-lines` default raised from 200 to 5000** so that `execute-command`
+  and `get-last-command` reliably capture large outputs (e.g. SBCL system
+  loads, test suites) without the user needing to pass an explicit value.
 
 ## [0.5.0] - 2026-08-13
 

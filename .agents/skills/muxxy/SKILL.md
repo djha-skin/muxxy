@@ -193,11 +193,12 @@ they asked you to work quietly or in the background.
    both panes" just invoke twice. `split-pane` prints the new pane id —
    capture it, then use it.
 9. **History depth.** `get-last-command` and `execute-command` look back
-   `--max-lines` (default 200); raise it for busy panes. Commands that print
-   a lot (system loads, test suites, long listings) scroll their own command
-   line out of the 200-line window, so `execute-command` comes back with
-   `last_command: null, output: null` even though it ran fine — pass
-   `--max-lines 5000` (or more) for anything that prints heavily.
+   `--max-lines` (default 5000); raise it for panes with very deep history.
+   Commands that print heavily (system loads, test suites, long listings)
+   scroll their own command line out of the capture window, so
+   `execute-command` comes back with `last_command: null, output: null`
+   even though it ran fine — pass `--max-lines 20000` (or more) for
+   anything that prints extremely heavily.
 10. **The last line of a multi-line block is the command.** For a block
     ending in `print(i)`, `last_command` is `print(i)`, not the whole block —
     that is inherent to prompt-line extraction.

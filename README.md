@@ -220,7 +220,7 @@ muxxy --pane '%1' kill-pane
 | `--prompt <REGEX>` | Prompt pattern (repeatable; required for prompt-based commands) | — |
 | `--kind <KIND>` | Built-in preset: `python`, `ipython`, `bash`, `sh`, `zsh`, `node`, `irb`, `iex`, `lisp`, `sbcl`, `goose` | — |
 | `-t, --pane <PANE>` | tmux pane target, e.g. `0`, `mysess:0.0`, `%1` | `0` |
-| `--max-lines <N>` | Lines to capture from the pane | `200` |
+| `--max-lines <N>` | Lines to capture from the pane | `5000` |
 | `--socket <PATH>` | tmux server socket path (`tmux -S`) | default server |
 | `--check <SECS>` | Poll interval for `execute-command` | `2.0` |
 | `--timeout <SECS>` | Abort `execute-command` after this long (`0` = forever) | `60` |

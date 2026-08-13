@@ -35,7 +35,7 @@ struct Cli {
     pane: String,
 
     /// Maximum number of lines to capture from the pane
-    #[arg(long, global = true, default_value_t = 200)]
+    #[arg(long, global = true, default_value_t = 5000)]
     max_lines: usize,
 
     /// tmux server socket path (defaults to the default server)
