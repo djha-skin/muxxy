@@ -4,6 +4,22 @@ All notable changes to muxxy are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-13
+
+### Added
+
+- **`execute-command --lines`** — repeatable `--lines` sends a multi-line
+  command in one call. The block is closed with a trailing blank line
+  automatically, and the wait loop requires the *same* prompt pattern that
+  was idle up front to reappear — so python's bare `...` continuation echo
+  before a slow block is no longer mistaken for completion. Verified live
+  against fast and slow multi-line blocks.
+
+### Changed
+
+- **`--timeout` now defaults to 60 seconds** instead of waiting forever;
+  pass `--timeout 0` for the old unbounded behavior.
+
 ## [0.4.0] - 2026-08-13
 
 ### Fixed
@@ -69,6 +85,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Prompt matching, last-command extraction, and an execute/wait loop that
   polls the pane rather than guessing at `sleep` durations.
 
+[0.5.0]: https://github.com/djha-skin/muxxy/releases/tag/v0.5.0
 [0.4.0]: https://github.com/djha-skin/muxxy/releases/tag/v0.4.0
 [0.3.0]: https://github.com/djha-skin/muxxy/releases/tag/v0.3.0
 [0.2.0]: https://github.com/djha-skin/muxxy/releases/tag/v0.2.0

@@ -140,8 +140,28 @@ Steps:
    `--check` seconds until a bare prompt reappears.
 4. Returns `status`, `last_command`, and `output`.
 
+Multi-line input is a first-class citizen: pass each line with `--lines`
+(repeatable, in order) and the block is closed with a trailing blank line
+automatically:
+
+```bash
+muxxy --kind python execute-command \
+  --lines 'for i in range(3):' \
+  --lines '    print(i * 10)'
+```
+
+```yaml
+status: ok
+last_command: print(i * 10)
+output: |-
+  0
+  10
+  20
+```
+
 If the REPL is busy up front, it returns `{"status": "error", "reason": ...}`
-instead. Pass `--timeout <SECS>` to bound the wait.
+instead. The wait is bounded by `--timeout <SECS>` (default 60; `0` waits
+forever).
 
 ### `split-pane` — set up a REPL pane
 
@@ -203,7 +223,7 @@ muxxy --pane '%1' kill-pane
 | `--max-lines <N>` | Lines to capture from the pane | `200` |
 | `--socket <PATH>` | tmux server socket path (`tmux -S`) | default server |
 | `--check <SECS>` | Poll interval for `execute-command` | `2.0` |
-| `--timeout <SECS>` | Abort `execute-command` after this long (`0` = forever) | `0` |
+| `--timeout <SECS>` | Abort `execute-command` after this long (`0` = forever) | `60` |
 
 Custom kinds can be added via the `TMUX_REPL_KINDS` environment variable — a
 JSON object mapping kind names to a regex string or array of regex strings,
@@ -259,5 +279,5 @@ socket for each test, so they never touch your running tmux sessions.
   `null`, timestamps, ...) are quoted so they round-trip as strings.
 - Bare prompt lines (e.g. python's empty `...` continuation echo) are not
   treated as command-start boundaries and are dropped from extracted output.
-- Like the MCP server, `execute-command` waits indefinitely by default; pass
-  `--timeout` to bound the wait.
+- `execute-command` waits up to `--timeout` seconds (default 60) for the
+  REPL to become idle again; pass `--timeout 0` to wait forever.
