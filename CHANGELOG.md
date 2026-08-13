@@ -4,6 +4,16 @@ All notable changes to muxxy are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`--socket ''` (empty string) now rejected with a clear error** instead of
+  passing an empty path to tmux, which produced a confusing, truncated "no
+  server running on" message. Both empty and blank (whitespace-only) socket
+  paths are caught at argument parsing time with the message "socket path
+  must not be empty".
+
 ## [0.5.0] - 2026-08-13
 
 ### Added

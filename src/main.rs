@@ -39,7 +39,7 @@ struct Cli {
     max_lines: usize,
 
     /// tmux server socket path (defaults to the default server)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, value_parser = parse_socket)]
     socket: Option<String>,
 
     #[command(subcommand)]
@@ -110,6 +110,17 @@ enum Subcommand {
     },
     /// Destroy the pane
     KillPane,
+}
+
+/// Validate `--socket`: reject empty or blank paths so tmux never receives
+/// an empty `-S ''`, which yields a confusing, truncated "no server running
+/// on" error instead of pointing at the real problem.
+fn parse_socket(s: &str) -> Result<String, String> {
+    if s.trim().is_empty() {
+        Err("socket path must not be empty".into())
+    } else {
+        Ok(s.to_string())
+    }
 }
 
 fn main() -> ExitCode {

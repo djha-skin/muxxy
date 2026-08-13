@@ -8,3 +8,6 @@
 # Added by cargo
 
 /target
+
+# pi agent runtime
+.pi/

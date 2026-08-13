@@ -136,6 +136,12 @@ where
 {
     let tmux = Tmux::with_command(command);
     Ok(match socket {
+        // Guard against blank socket paths (defense in depth; the CLI already
+        // rejects them) so the error is clear rather than tmux's truncated
+        // "no server running on".
+        Some(path) if path.trim().is_empty() => {
+            return Err("empty tmux socket path (--socket must be non-empty)".into());
+        }
         Some(path) => tmux.socket_path(path),
         None => tmux,
     })

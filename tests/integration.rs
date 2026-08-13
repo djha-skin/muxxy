@@ -336,3 +336,25 @@ fn multiline_input_with_continuation_prompt() {
     }
     assert!(done, "multi-line block output never appeared");
 }
+
+#[test]
+fn empty_socket_is_rejected_with_clear_error() {
+    // `--socket ''` must fail at argument parsing with a clear message, not
+    // with tmux's truncated "no server running on" error.
+    for bad in ["", "   "] {
+        let out = Command::new(env!("CARGO_BIN_EXE_muxxy"))
+            .args(["--socket", bad, "is-repl-ready"])
+            .output()
+            .expect("failed to run muxxy binary");
+        assert!(!out.status.success(), "empty --socket must be rejected");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("must not be empty"),
+            "expected a clear error about empty socket, got: {stderr}"
+        );
+        assert!(
+            !stderr.contains("no server running on"),
+            "error must not be the truncated tmux message: {stderr}"
+        );
+    }
+}
