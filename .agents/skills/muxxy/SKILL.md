@@ -33,7 +33,7 @@ Give one or more `--prompt` regexes (Rust `regex` syntax), or use a built-in
 | `zsh` | `^[^$+][$#] *` |
 | `node` | `^> ` |
 | `irb` | `^irb\(.*\):\d+:\d+> $` |
-| `sbcl` | `* `, numbered debugger prompts `0]`, `ldb> `, package prompts — note: nested debugger prompt `0[2]` (level ≥ 2) is NOT matched; add `^ *[0-9]+(\[[0-9]+\]|\])` via `--prompt` to cover it |
+| `sbcl` | `* `, numbered debugger prompts `0]` / nested `0[2]`, `ldb> `, package prompts |
 | `lisp` | like `sbcl` without `ldb> ` |
 | `ipython` | `^In \[\d+\]: ` |
 
@@ -93,11 +93,12 @@ evaluates `(abort)` inside the debugger's own evaluation context, which does
 instead (`0`–`n` as printed in the restart list, e.g. `1` or `4` for *Exit
 debugger, returning to top level*).
 
-**Beware nested debugger prompts.** An error raised *inside* the debugger
-(level ≥ 2) changes the prompt to `0[2]` (number `[level]`), which the built-in
-`sbcl` kind regex `^ *[0-9]+\] ?` does **not** match — muxxy will then report
-not-ready forever and `execute-command` times out. Work around it by adding a
-custom prompt that matches both forms without matching numeric output:
+**Nested debugger prompts are supported.** An error raised *inside* the
+debugger (level ≥ 2) changes the prompt to `0[2]` (number `[level]`); the
+built-in `sbcl` kind regex `^ *[0-9]+(\[[0-9]+\]|\]) ?` matches both `0]`
+and `0[2]`, so `execute-command` keeps working at any debugger level. If you
+specify custom prompts instead, remember to include **all** prompt styles
+(top-level `^\* ` and the debugger form) or a style transition will time out:
 
 ```bash
 muxxy --prompt '^\* ' --prompt '^ *[0-9]+(\[[0-9]+\]|\])' is-repl-ready
@@ -172,13 +173,12 @@ they asked you to work quietly or in the background.
    blank line, and put the continuation prompt in your prompt set. If a REPL
    parks anyway, `execute-command` waits forever by default — always pass
    `--timeout` when the command might not complete.
-3. **SBCL debugger prompts are normal prompts.** `0]`, `1]`, `ldb> ` are all
-   valid ready states — you can type at them. That is a feature: it is how
-   you recover from errors through the tool. But the **nested** debugger
-   prompt `0[2]` (level ≥ 2) is *not* matched by the `sbcl` kind — add the
-   custom prompt `^ *[0-9]+(\[[0-9]+\]|\])` (plus `^\* `) to handle it.
-   To leave the debugger, send the numbered restart (`1`, `4`, ...) —
-   `(abort)` does not exit (see the SBCL section above).
+3. **SBCL debugger prompts are normal prompts.** `0]`, `1]`, `0[2]`, `ldb> `
+   are all valid ready states — you can type at them. The `sbcl` kind
+   matches the nested debugger form `0[2]` too. To leave the debugger, send
+   the numbered restart (`1`, `4`, ...) — `(abort)` does not exit (see the
+   SBCL section above). If you pass custom prompts, include every prompt
+   style the REPL may show or a style transition will time out.
 4. **Trailing-space prompts.** tmux trims trailing spaces and pads lines to
    the terminal width; muxxy captures with `-N` and tolerates both, so
    patterns like `^>>> ` (with the space) work.

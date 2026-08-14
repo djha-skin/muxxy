@@ -288,7 +288,7 @@ mod tests {
             vec![
                 r"^\* ".to_string(),
                 r"^\*$".to_string(),
-                r"^ *\d+\] ?".to_string(),
+                r"^ *\d+(\[\d+\]|\]) ?".to_string(),
                 r"^ldb> ".to_string(),
             ],
         );
@@ -382,9 +382,17 @@ mod tests {
         // Debugger prompt with a number, idle
         assert!(prompt.is_idle_prompt("0] "));
         assert_eq!(prompt.detect_idle("0] "), Some("sbcl"));
+        // Nested debugger prompt (error inside the debugger), idle
+        assert!(prompt.is_idle_prompt("0[2] "));
+        assert_eq!(prompt.detect_idle("0[2] "), Some("sbcl"));
+        assert!(prompt.is_idle_prompt("0[3]"));
+        // Bare numeric output must NOT look like a prompt
+        assert!(!prompt.is_idle_prompt("1024"));
+        assert!(!prompt.is_prompt_line("1024"));
         // Debugger prompt while a command is on the line
         assert!(prompt.is_prompt_line("0] (restart 1)"));
         assert!(!prompt.is_idle_prompt("0] (restart 1)"));
+        assert!(prompt.is_prompt_line("0[2] (error \"nested\")"));
         // ldb prompt
         assert!(prompt.is_idle_prompt("ldb> "));
     }
@@ -396,6 +404,20 @@ mod tests {
         // * (foo)  ->  0] (restart 1)  ->  * 
         let lines =
             split_lines("* (foo)\n\nDebugger invoked...\n0] (restart 1)\nBack to top level.\n* \n");
+        let (cmd, out) = extract_last_command_and_output(&lines, &prompt);
+        assert_eq!(cmd.as_deref(), Some("(restart 1)"));
+        assert_eq!(out.as_deref(), Some("Back to top level."));
+    }
+
+    #[test]
+    fn sbcl_nested_debugger_extraction() {
+        let prompt = sbcl_prompt();
+        // Nested debugger: command errors inside the debugger, then restart:
+        // 0] (error "nested")  ->  0[2] (restart 4)  ->  0] (restart 1)  ->  *
+        let lines = split_lines(
+            "0] (error \"nested\")\n\nError in debugger...\n0[2] (restart 4)\n0] (restart 1)\nBack to top level.\n* \n",
+        );
+        assert!(is_repl_ready(&prompt, &lines));
         let (cmd, out) = extract_last_command_and_output(&lines, &prompt);
         assert_eq!(cmd.as_deref(), Some("(restart 1)"));
         assert_eq!(out.as_deref(), Some("Back to top level."));

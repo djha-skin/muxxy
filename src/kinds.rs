@@ -27,7 +27,7 @@ pub fn builtin() -> HashMap<String, Vec<String>> {
             r"^\* ".into(),              // top-level with or without command
             r"^\*$".into(),              // bare idle prompt
             r"^[A-Za-z0-9.-]+> ".into(), // custom package / slynk prompt
-            r"^ *[0-9]+\] ?".into(),     // numbered debugger prompt
+            r"^ *[0-9]+(\[[0-9]+\]|\]) ?".into(), // numbered debugger prompt
         ],
     );
     // SBCL: like lisp, plus the `ldb> ` low-level debugger prompt.
@@ -36,7 +36,7 @@ pub fn builtin() -> HashMap<String, Vec<String>> {
         vec![
             r"^\* ".into(),
             r"^\*$".into(),
-            r"^ *[0-9]+\] ?".into(),
+            r"^ *[0-9]+(\[[0-9]+\]|\]) ?".into(),
             r"^ldb> ".into(),
             r"^[A-Za-z0-9.-]+> ".into(),
         ],
@@ -104,7 +104,7 @@ mod tests {
         let kinds = builtin();
         assert_eq!(kinds["python"], vec!["^>>> "]);
         assert!(kinds.contains_key("sbcl"));
-        assert!(kinds["sbcl"].iter().any(|p| p == r"^ *[0-9]+\] ?"));
+        assert!(kinds["sbcl"].iter().any(|p| p == r"^ *[0-9]+(\[[0-9]+\]|\]) ?"));
         assert!(kinds.contains_key("lisp"));
         assert!(kinds.contains_key("bash"));
     }
