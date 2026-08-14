@@ -65,7 +65,7 @@ muxxy --kind sbcl execute-command '(+ 40 2)'
 
 # SBCL — commands that error drop into the debugger, and you keep going there
 muxxy --kind sbcl execute-command '(error "boom")'
-muxxy --kind sbcl execute-command '(invoke-restart (find-restart (quote abort)))'
+muxxy --kind sbcl execute-command '1'   # choose the printed top-level restart
 ```
 
 The SBCL debugger prompt (`0]`, `ldb> `) is just another prompt as far as
@@ -76,6 +76,11 @@ regexes are all it takes:
 ```bash
 muxxy --prompt '^myrepl> ' execute-command 'something'
 ```
+
+Custom prompt patterns should be anchored to the prompt prefix and must cover
+all styles the REPL can show (for example, both SBCL's `* ` and `0]` debugger
+prompts). muxxy warns when a custom pattern also matches ordinary output such
+as `1024`, since that can make output look like a prompt and drop it.
 
 ## Commands
 

@@ -9,7 +9,10 @@ mod tmux;
 mod yaml;
 
 use clap::{Parser, Subcommand as ClapSubcommand};
-use core::{extract_last_command_and_output, is_repl_ready, wait_for_idle, Prompts};
+use core::{
+    extract_last_command_and_output, extract_with_sent_command, is_repl_ready,
+    validate_custom_prompts, wait_for_idle, Prompts,
+};
 use std::process::ExitCode;
 use std::time::Duration;
 use yaml::{render_map, YamlValue};
@@ -182,7 +185,11 @@ fn build_prompts(cli: &Cli) -> Result<Prompts, String> {
         return Err("no prompts configured: pass --prompt REGEX or --kind KIND".into());
     }
     let kinds = kinds::load();
-    Prompts::from_kinds(&cli.kind, &kinds, &cli.prompt)
+    let prompts = Prompts::from_kinds(&cli.kind, &kinds, &cli.prompt)?;
+    for warning in validate_custom_prompts(&cli.prompt) {
+        eprintln!("muxxy: WARNING: {warning}");
+    }
+    Ok(prompts)
 }
 
 fn run_is_repl_ready(prompt: &Prompts, cli: &Cli) -> Result<(), String> {
@@ -270,7 +277,7 @@ fn run_execute_command(
         require_index,
     )?;
     let final_refs: Vec<&str> = final_lines.iter().map(String::as_str).collect();
-    let (last_command, output) = extract_last_command_and_output(&final_refs, prompt);
+    let (last_command, output) = extract_with_sent_command(&final_refs, prompt, &text);
 
     let out = render_map(&[
         ("status", YamlValue::Str("ok")),

@@ -213,9 +213,11 @@ they asked you to work quietly or in the background.
 13. **Prompt regexes are matched against output lines too.** A `--prompt`
     regex that can match a *prefix* of ordinary output (e.g. `^ *[0-9]+...`
     matching the number `1024`) will make muxxy treat that output line as a
-    prompt: it gets stripped from `output` and can even look idle. Keep
-    prompt patterns anchored to the real prompt shape (the `sbcl` kind
-    requires the trailing `]`, so numeric results like `1024` are safe).
+    prompt: it gets stripped from `output` and can even look idle. muxxy now
+    restricts history matching/stripping to line prefixes and warns when a
+    custom pattern matches common output samples. Keep patterns anchored to
+    the real prompt shape (the `sbcl` kind requires the trailing `]`, so
+    numeric results like `1024` are safe).
 14. **Custom prompt sets must cover every prompt style the REPL can show.**
     If a command changes the prompt (SBCL `* ` ↔ debugger `0]`, Python
     `>>> ` ↔ `...`), and your `--prompt` set only matches the old style,
@@ -224,8 +226,9 @@ they asked you to work quietly or in the background.
     include them all.
 15. **rlwrap echoes multi-line input without the prompt prefix.** After a
     `send-keys` multi-line block, the echoed lines lack the `* ` prefix, so
-    the next `execute-command`/`get-last-command` can report stale
-    `last_command` and history-mixed `output`. This is an rlwrap display
-    quirk muxxy can't fully paper over — close blocks with a trailing blank
+    `get-last-command` can report stale `last_command` and history-mixed
+    `output`. `execute-command` now uses the command it sent to repair this
+    when the un-prefixed echo is still visible. For `get-last-command`, this
+    remains an rlwrap display limitation: close blocks with a trailing blank
     line, then run a throwaway command (`(+ 1 1)`) to re-establish a clean
-    boundary before trusting `get-last-command`.
+    boundary before trusting history.

@@ -8,6 +8,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Custom prompt matching is safer.** History prompt detection and stripping
+  now require a match at the start of a line, preventing prompt text embedded
+  in ordinary output from being treated as a command boundary. Custom
+  `--prompt` patterns are checked against common output-like lines and emit a
+  warning when they can match values such as `1024`.
+- **rlwrap echo recovery for `execute-command`.** When rlwrap omits the prompt
+  prefix from a command echo, muxxy uses the sent command to recover the
+  correct command/output boundary instead of returning stale history.
+- **SBCL debugger guidance now recommends numbered restarts.** `(abort)`
+  evaluates in the debugger's own context and does not reliably return to the
+  top level; use the printed restart number instead.
 - **`--socket ''` (empty string) now rejected with a clear error** instead of
   passing an empty path to tmux, which produced a confusing, truncated "no
   server running on" message. Both empty and blank (whitespace-only) socket

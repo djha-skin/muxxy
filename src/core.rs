@@ -47,10 +47,12 @@ impl Prompts {
         Ok(Self { entries })
     }
 
-    /// Search semantics (like Python `re.search`): true when any pattern
-    /// matches anywhere in the line. Used to find prompt lines in history.
+    /// Prefix semantics: true when any pattern matches at the start of the
+    /// line. This prevents a prompt regex from matching mid-line output (e.g.
+    /// `^>>> ` matching `note: see >>> for help`). Used to find prompt lines
+    /// in history.
     pub fn is_prompt_line(&self, line: &str) -> bool {
-        self.entries.iter().any(|(_, re)| re.is_match(line))
+        self.entries.iter().any(|(_, re)| prefix_match(re, line))
     }
 
     /// Idle semantics: true when any pattern matches a prefix of the line
@@ -84,13 +86,16 @@ impl Prompts {
         }
     }
 
-    /// Strip the prompt prefix from a command line: replace the first match
-    /// of the first matching pattern and trim (like Python
-    /// `re.sub(pattern, "", line, count=1).strip()`).
+    /// Strip the prompt prefix from a command line: replace the first
+    /// position-0 match of the first matching pattern and trim. Unlike
+    /// Python `re.sub(..., count=1)`, this only strips when the match is at
+    /// the start of the line, so mid-line output is never eaten.
     pub fn strip_prompt(&self, line: &str) -> String {
         for (_, re) in &self.entries {
-            if re.is_match(line) {
-                return re.replace(line, "").trim().to_string();
+            if let Some(m) = re.find(line)
+                && m.start() == 0
+            {
+                return line[m.end()..].trim().to_string();
             }
         }
         line.trim().to_string()
@@ -99,6 +104,11 @@ impl Prompts {
 
 fn compile(pattern: &str) -> Result<Regex, String> {
     Regex::new(pattern).map_err(|e| format!("invalid prompt regex {pattern:?}: {e}"))
+}
+
+/// True when `re` matches at the start of `line` (prefix semantics).
+fn prefix_match(re: &Regex, line: &str) -> bool {
+    re.find(line).is_some_and(|m| m.start() == 0)
 }
 
 /// True when `re` matches a prefix of `line` and everything after the match
@@ -183,13 +193,127 @@ pub fn extract_last_command_and_output(
     // Drop bare-prompt-only lines from the output (e.g. the empty `...`
     // continuation line python echoes when a block is closed), and trim
     // width padding from each line.
-    let output = lines[start_idx + 1..end_idx]
+    let output = join_output(&lines[start_idx + 1..end_idx], prompt);
+    (Some(last_command), Some(output))
+}
+
+/// Output-like sample lines a custom prompt regex must never match. If a
+/// pattern matches any of these — especially as a bare idle prompt — muxxy
+/// may treat ordinary output as a prompt and silently drop it.
+const OUTPUT_LIKE_SAMPLES: &[&str] = &[
+    "1024", "0", "1", "7", "42", "100", "65536", "123456789", "3.14", "-1",
+    "ok", "true", "false", "nil", "NIL", "hello", "foo", "(foo)",
+];
+
+/// Sanity-check custom `--prompt` regexes against a corpus of ordinary
+/// output lines (bare numbers, short words). The built-in kinds are curated
+/// to avoid these; hand-written regexes often are not (e.g. a SBCL debugger
+/// attempt like `^ *[0-9]+(\\[[0-9]+\\])?` also matches the bare integer
+/// `1024`). Returns one warning string per offending pattern, to be printed
+/// to stderr — the regex still works, but the user should anchor it to the
+/// real prompt shape (e.g. require the trailing `]` or `> `).
+pub fn validate_custom_prompts(prompts: &[String]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for p in prompts {
+        let Ok(re) = Regex::new(p) else {
+            continue; // compile errors are reported at prompt-build time
+        };
+        for sample in OUTPUT_LIKE_SAMPLES {
+            if re.is_match(sample) {
+                let idle = re
+                    .find(sample)
+                    .is_some_and(|m| m.start() == 0 && sample[m.end()..].chars().all(char::is_whitespace));
+                warnings.push(format!(
+                    "prompt regex {p:?} also matches the ordinary output line {sample:?}{}; \
+                     muxxy may treat that output as a prompt and drop it — anchor the pattern \
+                     to the real prompt shape (e.g. require a trailing ']' or '> ')",
+                    if idle { " as a bare idle prompt" } else { "" }
+                ));
+                break; // one warning per pattern
+            }
+        }
+    }
+    warnings
+}
+
+/// Extract `(last_command, output)` like [`extract_last_command_and_output`],
+/// but repair the result using the command text that was actually sent.
+///
+/// rlwrap (and similar front ends) echo multi-line pastes *without* the
+/// prompt prefix, and can stay confused for the next command too — so the
+/// real echo of a freshly sent command may lack the `* ` prefix. Plain
+/// prompt-line extraction then walks back to a *stale* prompt-prefixed line
+/// and reports an old command plus history-mixed output. When extraction
+/// disagrees with what we sent, look for the sent command text among the
+/// captured lines and retarget the block there.
+///
+/// If no complete block or visible echo can be found (e.g. the command line
+/// scrolled out of the capture window), returns the sent command with a
+/// `None` output: after a successful idle wait, we know it ran even though
+/// its output cannot be recovered.
+pub fn extract_with_sent_command(
+    lines: &[&str],
+    prompt: &Prompts,
+    sent: &str,
+) -> (Option<String>, Option<String>) {
+    let sent = sent.trim();
+    if sent.is_empty() {
+        return extract_last_command_and_output(lines, prompt);
+    }
+
+    let (last_command, output) = extract_last_command_and_output(lines, prompt);
+
+    // Normal case: extraction already agrees with what we sent.
+    if last_command.as_deref().map(str::trim) == Some(sent) {
+        return (last_command, output);
+    }
+
+    // No complete block found (e.g. the command echo scrolled out): search
+    // the whole visible history for an un-prefixed echo of the sent command
+    // so the output can still be recovered.
+    let Some(end_idx) = lines.iter().rposition(|l| prompt.is_prompt_line(l)) else {
+        return (last_command, output);
+    };
+    if last_command.is_none() {
+        let echo_idx = lines[..end_idx]
+            .iter()
+            .rposition(|l| prompt.strip_prompt(l).trim() == sent);
+        return match echo_idx {
+            Some(i) => (
+                Some(sent.to_string()),
+                Some(join_output(&lines[i + 1..end_idx], prompt)),
+            ),
+            None => (Some(sent.to_string()), None),
+        };
+    }
+
+    // Extraction found a *stale* command line (rlwrap echo without prefix):
+    // the real echo sits inside the extracted output region. Retarget the
+    // block to the first line there that matches the sent command, so output
+    // no longer mixes in stale history.
+    let Some(ref out) = output else {
+        return (last_command, output);
+    };
+    let out_lines: Vec<&str> = out.split('\n').collect();
+    match out_lines
+        .iter()
+        .position(|l| prompt.strip_prompt(l).trim() == sent)
+    {
+        Some(pos) => (Some(sent.to_string()), Some(out_lines[pos + 1..].join("\n"))),
+        None => (last_command, output),
+    }
+}
+
+/// Join `lines` into output text: drop bare-prompt-only lines and trim
+/// width padding from each line (same filtering as
+/// [`extract_last_command_and_output`]).
+fn join_output(lines: &[&str], prompt: &Prompts) -> String {
+    lines
         .iter()
         .filter(|l| !prompt.strip_prompt(l).is_empty())
         .map(|l| l.trim_end())
         .collect::<Vec<_>>()
-        .join("\n");
-    (Some(last_command), Some(output))
+        .join("\n")
 }
 
 /// Wait for a command to finish after it has been sent to the pane.
@@ -319,11 +443,13 @@ mod tests {
     }
 
     #[test]
-    fn idle_uses_fullmatch_but_detection_uses_search() {
+    fn idle_uses_bare_prompt_but_detection_uses_prefix() {
         let prompt = py_prompt();
         assert!(prompt.is_idle_prompt(">>> "));
         assert!(!prompt.is_idle_prompt(">>> 2 + 2"));
         assert!(prompt.is_prompt_line(">>> 2 + 2"));
+        // Prompt-looking text in ordinary output is not a command boundary.
+        assert!(!prompt.is_prompt_line("note: see >>> for help"));
     }
 
     #[test]
@@ -354,9 +480,50 @@ mod tests {
     }
 
     #[test]
-    fn strip_prompt_removes_prefix() {
+    fn strip_prompt_removes_only_a_prefix() {
         let prompt = py_prompt();
         assert_eq!(prompt.strip_prompt(">>> print(1)"), "print(1)");
+        assert_eq!(
+            prompt.strip_prompt("note: see >>> for help"),
+            "note: see >>> for help"
+        );
+    }
+
+    #[test]
+    fn warns_when_custom_prompt_matches_bare_output() {
+        let bad = r"^ *[0-9]+(\[[0-9]+\])?".to_string();
+        let safe = r"^ *[0-9]+(\[[0-9]+\]|\]) ?".to_string();
+        let warnings = validate_custom_prompts(&[bad, safe, "^>>> ".to_string()]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("1024"));
+        assert!(warnings[0].contains("bare idle prompt"));
+    }
+
+    #[test]
+    fn sent_command_repairs_rlwrap_unprefixed_echo() {
+        let prompt = sbcl_prompt();
+        // rlwrap prefixed the old multi-line command's first line, but not
+        // its continuation or the next command's echo. Plain extraction
+        // therefore finds the stale `(defun ...)` boundary.
+        let lines = split_lines(
+            "* (defun foo (n)\n  (* n n))\n(foo 9)\n81\n* \n",
+        );
+        let (cmd, out) = extract_last_command_and_output(&lines, &prompt);
+        assert_eq!(cmd.as_deref(), Some("(defun foo (n)"));
+        assert_eq!(out.as_deref(), Some("  (* n n))\n(foo 9)\n81"));
+
+        let (cmd, out) = extract_with_sent_command(&lines, &prompt, "(foo 9)");
+        assert_eq!(cmd.as_deref(), Some("(foo 9)"));
+        assert_eq!(out.as_deref(), Some("81"));
+    }
+
+    #[test]
+    fn sent_command_is_reported_when_echo_scrolled_out() {
+        let prompt = py_prompt();
+        let lines = split_lines("lots of output\n>>> \n");
+        let (cmd, out) = extract_with_sent_command(&lines, &prompt, "print('lost')");
+        assert_eq!(cmd.as_deref(), Some("print('lost')"));
+        assert_eq!(out, None);
     }
 
     #[test]
