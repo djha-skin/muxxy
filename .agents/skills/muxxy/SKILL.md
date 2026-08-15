@@ -32,6 +32,7 @@ Give one or more `--prompt` regexes (Rust `regex` syntax), or use a built-in
 | `bash` / `sh` | `^[^$#]+[$#] *` (e.g. `user@host$ `) |
 | `zsh` | `^[^$+][$#] *` |
 | `node` | `^> ` |
+| `janet` | `repl:<line>:> ` and delimiter-aware continuation prompts such as `repl:<line>:(> ` |
 | `irb` | `^irb\(.*\):\d+:\d+> $` |
 | `sbcl` | `* `, numbered debugger prompts `0]` / nested `0[2]`, `ldb> `, package prompts |
 | `lisp` | like `sbcl` without `ldb> ` |
@@ -40,7 +41,7 @@ Give one or more `--prompt` regexes (Rust `regex` syntax), or use a built-in
 Custom kinds go in the `TMUX_REPL_KINDS` env var (JSON mapping kind → regex
 string or array of regex strings), merged over the built-ins.
 
-## The three languages
+## Common languages
 
 ### Python
 
@@ -59,6 +60,24 @@ muxxy --prompt '^>>> ' --prompt '^\.\.\. ' send-keys $'for i in range(3):\n    p
 
 `send-keys` passes key names through to tmux, so `send-keys 'C-c'` interrupts
 a stuck block.
+
+### Janet
+
+Janet's default REPL prompt is `repl:<line>:> `. The line number advances as
+input is read. For an incomplete form, Janet inserts the parser's nested
+open-delimiter state before `> ` — for example, `repl:<line>:(> ` for an
+unfinished parenthesized form. The `janet` kind includes both the top-level and
+continuation patterns, so multi-line forms can wait for the final top-level
+prompt:
+
+```bash
+muxxy --kind janet is-repl-ready
+muxxy --kind janet execute-command '(+ 40 2)'
+muxxy --kind janet execute-command --lines '(+ 10' --lines ' 32)'
+```
+
+The Janet documentation describes this state as `parser/state :delimiters`;
+it contains nested parentheses, brackets, braces, or string markers.
 
 ### Shell
 

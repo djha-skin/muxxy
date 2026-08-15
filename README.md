@@ -6,8 +6,9 @@ A command-line tool for interacting with a REPL running inside a
 [tmux](https://github.com/tmux/tmux) pane — a Rust CLI mirror of the
 [`tmux-repl-mcp`](https://github.com/djha-skin/tmux-repl-mcp) MCP server's
 tools. Where the MCP server keys off named REPL "kinds", muxxy matches a set
-of prompt regexes, so any REPL — Python, `irb`, Lisp, a shell, whatever —
-works as long as you can describe its prompt (or use a built-in `--kind`).
+of prompt regexes, so any REPL — Python, Janet, `irb`, Lisp, a shell,
+whatever — works as long as you can describe its prompt (or use a built-in
+`--kind`).
 
 It talks to tmux through the [`tmux_interface`](https://crates.io/crates/tmux_interface)
 Rust crate's typed command builders, and prints **YAML** with multiline output
@@ -49,8 +50,8 @@ muxxy [OPTIONS] <COMMAND>
 
 Point muxxy at a REPL with a `--prompt` regex (repeatable, since a REPL can
 have several prompt styles) or a built-in `--kind`. It works with *any* REPL
-whose prompt you can describe — Python, Ruby, shells, Node, and the Lisp
-family included:
+whose prompt you can describe — Python, Janet, Ruby, shells, Node, and the
+Lisp family included:
 
 ```bash
 # Python — even multi-line blocks (note the continuation prompt)
@@ -59,6 +60,9 @@ muxxy --prompt '^>>> ' --prompt '^\.\.\. ' get-last-command
 
 # Ruby (irb)
 muxxy --kind irb execute-command '[1, 2, 3].map { |x| x * 2 }'
+
+# Janet — the kind also includes delimiter-aware continuation prompts
+muxxy --kind janet execute-command '(+ 40 2)'
 
 # SBCL
 muxxy --kind sbcl execute-command '(+ 40 2)'
@@ -76,6 +80,11 @@ regexes are all it takes:
 ```bash
 muxxy --prompt '^myrepl> ' execute-command 'something'
 ```
+
+Janet's default prompt is `repl:1:> ` (the number advances with input). While
+an expression is incomplete, Janet shows the parser's open-delimiter state,
+for example `repl:5:(> ` for an unfinished parenthesized form. The built-in
+`janet` kind covers both prompt styles.
 
 Custom prompt patterns should be anchored to the prompt prefix and must cover
 all styles the REPL can show (for example, both SBCL's `* ` and `0]` debugger
@@ -223,7 +232,7 @@ muxxy --pane '%1' kill-pane
 | Flag | Description | Default |
 |---|---|---|
 | `--prompt <REGEX>` | Prompt pattern (repeatable; required for prompt-based commands) | — |
-| `--kind <KIND>` | Built-in preset: `python`, `ipython`, `bash`, `sh`, `zsh`, `node`, `irb`, `iex`, `lisp`, `sbcl`, `goose` | — |
+| `--kind <KIND>` | Built-in preset: `python`, `ipython`, `bash`, `sh`, `zsh`, `node`, `janet`, `irb`, `iex`, `lisp`, `sbcl`, `goose` | — |
 | `-t, --pane <PANE>` | tmux pane target, e.g. `0`, `mysess:0.0`, `%1` | `0` |
 | `--max-lines <N>` | Lines to capture from the pane | `5000` |
 | `--socket <PATH>` | tmux server socket path (`tmux -S`) | default server |

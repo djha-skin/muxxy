@@ -14,6 +14,17 @@ pub fn builtin() -> HashMap<String, Vec<String>> {
     kinds.insert("sh".into(), vec![r"^[^$#]+[$#] *".into()]);
     kinds.insert("zsh".into(), vec![r"^[^$+][$#] *".into()]);
     kinds.insert("node".into(), vec![r"^> ".into()]);
+    // Janet prints `repl:<line>:> ` at the top level. When the parser is
+    // waiting for an unfinished form, it inserts one or more open delimiters
+    // (or string markers) before `> `; keep this as a separate pattern so
+    // multi-line waits can distinguish continuation from the final prompt.
+    kinds.insert(
+        "janet".into(),
+        vec![
+            r"^repl:\d+:> ".into(),
+            r"^repl:\d+:(?:\(|\[|\{|\x22|\x60)+> ".into(),
+        ],
+    );
     // Modern irb (Ruby 3.x) prints `irb(main):001> `; older irb had an extra
     // `:0` line-number field (`irb(main):001:0> `). Match both.
     kinds.insert("irb".into(), vec![r"^irb\(.*\):\d+(:\d+)?> *".into()]);
@@ -107,6 +118,24 @@ mod tests {
         assert!(kinds["sbcl"].iter().any(|p| p == r"^ *[0-9]+(\[[0-9]+\]|\]) ?"));
         assert!(kinds.contains_key("lisp"));
         assert!(kinds.contains_key("bash"));
+        assert!(kinds.contains_key("janet"));
+    }
+
+    #[test]
+    fn janet_kind_matches_top_level_and_continuation_prompts() {
+        let kinds = builtin();
+        let top_level = regex::Regex::new(&kinds["janet"][0]).unwrap();
+        let continuation = regex::Regex::new(&kinds["janet"][1]).unwrap();
+
+        assert!(top_level.is_match("repl:1:> "));
+        assert!(top_level.is_match("repl:42:> (+ 1 2)"));
+        assert!(!top_level.is_match("repl:5:(> "));
+
+        assert!(continuation.is_match("repl:5:(> "));
+        assert!(continuation.is_match(r#"repl:8:([{"`> "#));
+        assert!(!continuation.is_match("repl:9:> "));
+        assert!(!continuation.is_match("repl:x:(> "));
+        assert!(!continuation.is_match("repl:9:foo> "));
     }
 
     #[test]

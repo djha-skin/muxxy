@@ -98,6 +98,14 @@ fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
+fn janet_available() -> bool {
+    Command::new("janet")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 #[test]
 fn is_repl_ready_true_when_idle() {
     let Some(server) = TestServer::start() else { return };
@@ -228,6 +236,73 @@ fn split_pane_and_send_keys_setup_flow() {
     let v = TestServer::parse_yaml(&out);
     assert_eq!(v["status"].as_str(), Some("ok"));
     assert_eq!(v["output"].as_str(), Some("2"));
+}
+
+#[test]
+fn janet_kind_works_against_a_janet_repl() {
+    if !janet_available() {
+        eprintln!("janet unavailable; skipping");
+        return;
+    }
+    let Some(server) = TestServer::start() else { return };
+
+    let out = server.muxxy(&["split-pane"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = TestServer::parse_yaml(&out);
+    let pane = v["pane"]
+        .as_str()
+        .expect("split-pane must print the new pane id")
+        .to_string();
+
+    let out = server.muxxy(&["--pane", &pane, "send-keys", "janet", "--sleep", "1"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let mut ready = false;
+    for _ in 0..40 {
+        let out = server.muxxy(&["--pane", &pane, "--kind", "janet", "is-repl-ready"]);
+        let v = TestServer::parse_yaml(&out);
+        if v["is_ready"].as_bool() == Some(true) {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(ready, "Janet REPL never became ready");
+
+    let out = server.muxxy(&[
+        "--pane",
+        &pane,
+        "--kind",
+        "janet",
+        "execute-command",
+        "(+ 40 2)",
+        "--check",
+        "0.1",
+    ]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = TestServer::parse_yaml(&out);
+    assert_eq!(v["status"].as_str(), Some("ok"));
+    assert_eq!(v["output"].as_str(), Some("42"));
+
+    // The continuation prompt (`repl:N:(> `) must not be mistaken for the
+    // final top-level prompt while a multi-line form is being sent.
+    let out = server.muxxy(&[
+        "--pane",
+        &pane,
+        "--kind",
+        "janet",
+        "execute-command",
+        "--lines",
+        "(+ 10",
+        "--lines",
+        " 32)",
+        "--check",
+        "0.1",
+    ]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v = TestServer::parse_yaml(&out);
+    assert_eq!(v["status"].as_str(), Some("ok"));
+    assert_eq!(v["output"].as_str(), Some("42"));
 }
 
 #[test]

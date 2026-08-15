@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Janet REPL kind** — `--kind janet` recognizes Janet's numbered
+  `repl:<line>:> ` top-level prompts and the delimiter-aware continuation
+  prompts shown for incomplete forms.
+
 ### Fixed
 
 - **Custom prompt matching is safer.** History prompt detection and stripping
